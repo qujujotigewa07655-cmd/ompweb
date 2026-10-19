@@ -9,7 +9,13 @@ function canonicalOrigin(value: string): string | null {
 function getRequestOrigin(request: Request): string | null {
   const requestUrl = new URL(request.url);
   const host = request.headers.get("host");
-  return host ? canonicalOrigin(`${requestUrl.protocol}//${host}`) : requestUrl.origin;
+  // Honor the terminating reverse proxy's scheme: Caddy forwards over plain
+  // HTTP to the loopback backend but sets X-Forwarded-Proto to the browser's
+  // scheme, so comparing the browser Origin (https) against the internal
+  // requestUrl.protocol (http) would 403 every browser API call.
+  const forwarded = request.headers.get("x-forwarded-proto")?.split(",")[0].trim();
+  const protocol = forwarded === "https" || forwarded === "http" ? `${forwarded}:` : requestUrl.protocol;
+  return host ? canonicalOrigin(`${protocol}//${host}`) : requestUrl.origin;
 }
 
 /** Reject browser cross-site API requests while preserving non-browser clients. */

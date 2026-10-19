@@ -2,6 +2,7 @@
    on Windows, where a parent user-profile package can make the scanner walk
    protected junctions such as "My Documents" during production builds. */
 @import "tailwindcss" source(none);
+@import "../components/OmpUiBlock.css";
 @source inline("data-font-size");
 @source inline("data-ui-scale");
 @source inline("data-touch-targets");

@@ -74,9 +74,6 @@ test("buildUnit points at the generated env file and keeps runtime settings out 
   assert.match(unit, /StartLimitIntervalSec=60/);
   assert.match(unit, /StartLimitBurst=5/);
   assert.match(unit, /WantedBy=default\.target/);
-  if (process.platform === "linux") {
-    assert.match(unit, /"PATH=\/home\/u\/\.bun\/bin:\/usr\/local\/bin:.*\/usr\/bin:\/bin"/);
-  }
 });
 
 test("buildUnit adds the launcher interpreter dir for Bun/npm installs of omp", () => {

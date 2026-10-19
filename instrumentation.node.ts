@@ -40,6 +40,7 @@ export async function register(): Promise<void> {
   // The shared process registers its own SIGINT/SIGTERM/exit disposal hook on
   // first use (lib/omp/rpc-utility.ts), as the session registry does.
   void (async () => {
+    if (process.env.OMP_WEB_FRONTEND_ONLY === "1") return;
     try {
       const { runUtilityCommand } = await import("@/lib/omp/rpc-utility");
       await runUtilityCommand({ type: "get_state" });
@@ -60,6 +61,7 @@ export async function register(): Promise<void> {
   // Resume sessions that were mid-run when omp-web last stopped (opt-in
   // setting). Fire-and-forget: resuming must not block boot.
   void (async () => {
+    if (process.env.OMP_WEB_FRONTEND_ONLY === "1") return;
     try {
       const { resumeInterruptedSessions } = await import("@/lib/rpc-manager");
       await resumeInterruptedSessions();

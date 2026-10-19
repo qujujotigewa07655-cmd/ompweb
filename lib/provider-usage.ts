@@ -3,6 +3,7 @@ import { promisify } from "util";
 import { resolveOmpBin } from "./omp/omp-cli";
 import { asNumber, isRecord } from "./type-guards";
 import type {
+  ProviderUsageBalance,
   ProviderUsageReport,
   ProviderUsageSnapshot,
   ProviderUsageWindowId,
@@ -79,6 +80,27 @@ function normalizeReport(
   const limits = Array.isArray(rawReport.limits) ? rawReport.limits : [];
   const activeModelId = query.modelId?.toLowerCase();
   const groups = new Map<string, UsageGroup>();
+  // Money and credit balances are account-wide and have no percentage window:
+  // an aggregator reports `remaining` in dollars rather than a used fraction.
+  // They must survive this normalizer or the account loses its only figure.
+  const balances: ProviderUsageBalance[] = [];
+  for (const rawLimit of limits) {
+    if (!isRecord(rawLimit) || !isRecord(rawLimit.scope) || !isRecord(rawLimit.amount)) continue;
+    if (nonEmptyString(rawLimit.scope.windowId) !== "balance") continue;
+    const amount = rawLimit.amount;
+    const remaining = asNumber(amount.remaining);
+    if (remaining === undefined) continue;
+    const used = asNumber(amount.used);
+    const limit = asNumber(amount.limit);
+    const balanceLabel = nonEmptyString(rawLimit.label);
+    balances.push({
+      ...(balanceLabel ? { label: balanceLabel } : {}),
+      remaining,
+      ...(used !== undefined ? { used } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      unit: nonEmptyString(amount.unit) ?? "unknown",
+    });
+  }
 
   for (const rawLimit of limits) {
     if (!isRecord(rawLimit) || !isRecord(rawLimit.scope) || !isRecord(rawLimit.amount)) continue;
@@ -122,7 +144,7 @@ function normalizeReport(
       ...(label ? { accountLabel: label } : {}),
       ...(!label ? { accountIndex: reportIndex + 1 } : {}),
       ...(plan ? { plan } : {}),
-      noLimits: true,
+      ...(balances.length > 0 ? { balances } : { noLimits: true }),
     }];
   }
   return selectedGroups.flatMap((group) => {
@@ -133,6 +155,7 @@ function normalizeReport(
       ...(plan ? { plan } : {}),
       ...(group.modelId ? { modelId: group.modelId } : {}),
       ...(group.tier ? { tier: group.tier } : {}),
+      ...(balances.length > 0 ? { balances } : {}),
     };
     for (const candidate of group.limits.values()) {
       const normalized = usageWindow(candidate.id, candidate.fraction, candidate.window, now);

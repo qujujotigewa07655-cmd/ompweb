@@ -196,3 +196,28 @@ test("opens the most specific roster entry, else a disk-backed stub for the base
     id: "Gone", agent: "Gone", status: "completed", index: 0, source: "history",
   });
 });
+
+test("renders only the omp-ui fence as a card, preserving ordinary code fences and inline code", () => {
+  const source = JSON.stringify({ type: "text", text: "A native card" });
+  const card = renderMarkdown(`\`\`\`omp-ui\n${source}\n\`\`\``);
+  const ordinary = renderMarkdown(`\`\`\`json\n${source}\n\`\`\`\n\n\`omp-ui\``);
+
+  assert.match(card, /class="omp-ui"/);
+  assert.match(card, /<p class="omp-ui-text">A native card<\/p>/);
+  assert.doesNotMatch(ordinary, /class="omp-ui"/);
+  assert.match(ordinary, /<pre/);
+  assert.match(ordinary, /<code class="markdown-inline-code">omp-ui<\/code>/);
+});
+
+test("keeps streaming omp-ui and Mermaid fences as code without rendering native cards", () => {
+  const source = JSON.stringify({ type: "text", text: "A native card" });
+  const streaming = renderToStaticMarkup(React.createElement(MarkdownBody, { isStreaming: true }, `\`\`\`omp-ui\n${source}\n\`\`\``));
+  const mermaid = renderMarkdown("```mermaid\ngraph TD; A-->B;\n```");
+
+  assert.doesNotMatch(streaming, /class="omp-ui"/);
+  assert.match(streaming, /<pre/);
+  assert.match(streaming, /A native card/);
+  assert.doesNotMatch(mermaid, /class="omp-ui"/);
+  assert.match(mermaid, /<pre/);
+  assert.match(mermaid, /graph TD/);
+});

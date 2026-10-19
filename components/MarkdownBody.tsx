@@ -6,6 +6,7 @@ import { remarkInlineCodeFileLinks, resolveLocalFileHref } from "@/lib/file-link
 import { encodeFilePathForApi } from "@/lib/file-paths";
 import { AgentLinkContext, agentAwareUrlTransform, agentLinkIds, remarkAgentLinks } from "../lib/agent-links";
 import { GithubRepoContext, remarkGithubRefs } from "../lib/github-refs";
+import { OmpUiActionContext } from "../lib/omp-ui-actions";
 import { normalizeDisplayMath, useMarkdownPlugins, type MarkdownPlugins } from "../lib/markdown";
 import { markdownCodeRenderer } from "./MarkdownCode";
 import { ClickableImage } from "./ImageLightbox";
@@ -17,9 +18,10 @@ interface MarkdownBodyProps {
   cwd?: string;
   onOpenFile?: (filePath: string) => void;
   suppressImages?: boolean;
+  ompUiActions?: boolean;
 }
 
-export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, suppressImages = false }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, suppressImages = false, ompUiActions = false }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   const { remarkPlugins: baseRemarkPlugins, rehypePlugins } = useMarkdownPlugins(normalizedMarkdown);
   const githubRepo = useContext(GithubRepoContext);
@@ -33,6 +35,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
     [baseRemarkPlugins, githubRepo, onOpenFile, cwd],
   );
   const openAgentLink = useContext(AgentLinkContext);
+  const ompUiAction = useContext(OmpUiActionContext);
 
   // Rebuilt only when its captured props change, not on every render.
   const components = useMemo<Components>(() => {
@@ -91,7 +94,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       });
 
     return {
-    code: markdownCodeRenderer({ isStreaming, inlineClassName: "markdown-inline-code" }),
+    code: markdownCodeRenderer({ isStreaming, inlineClassName: "markdown-inline-code", actionsEnabled: true }),
     pre({ children }) {
       return <>{children}</>;
     },
@@ -153,6 +156,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
   }, [isStreaming, cwd, onOpenFile, suppressImages, openAgentLink]);
 
   return (
+    <OmpUiActionContext.Provider value={ompUiActions ? ompUiAction : null}>
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
@@ -163,5 +167,6 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         {normalizedMarkdown}
       </ReactMarkdown>
     </div>
+    </OmpUiActionContext.Provider>
   );
 }

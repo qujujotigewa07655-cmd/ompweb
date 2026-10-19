@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { ProviderUsageReport, ProviderUsageSnapshot } from "@/lib/provider-usage-types";
+import type { ProviderUsageBalance, ProviderUsageReport, ProviderUsageSnapshot } from "@/lib/provider-usage-types";
 
 export function formatUsageReset(value: number, unit: "minutes" | "hours"): string {
   if (unit === "minutes") {
@@ -12,6 +12,13 @@ export function formatUsageReset(value: number, unit: "minutes" | "hours"): stri
   const days = Math.floor(value / 24);
   const hours = value % 24;
   return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+}
+
+/** Money and credit balances in the unit the provider reported them in. */
+export function formatUsageBalance(balance: ProviderUsageBalance): string {
+  if (balance.unit === "usd") return `$${balance.remaining.toFixed(2)}`;
+  const rounded = Math.round(balance.remaining * 100) / 100;
+  return `${rounded} ${balance.unit}`;
 }
 
 export function usageTone(percent: number): string {

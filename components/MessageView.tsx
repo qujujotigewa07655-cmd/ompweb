@@ -4,6 +4,7 @@ import { memo, useState, useId, useRef, useEffect, useLayoutEffect, useMemo, use
 import { Copy, Check, GitFork, CornerUpLeft, ChevronRight, ChevronDown, Brain, EyeOff, CircleAlert, CircleSlash, LoaderCircle, FileText, Search, FileEdit, Terminal, CheckSquare, Bot, Code2, Globe, MessagesSquare, Wrench, Volume2, Square } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { AgentLinkContext, agentLinkIds } from "../lib/agent-links";
+import { OmpUiActionContext, type OmpUiActionScope } from "../lib/omp-ui-actions";
 import { MessageCopyActions } from "./MessageCopyActions";
 import { useSpeechContext } from "@/hooks/useSpeechSynthesis";
 import { ClickableImage } from "./ImageLightbox";
@@ -172,6 +173,7 @@ interface Props {
   showTimestamp?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
+  ompUiAction?: OmpUiActionScope | null;
   toolCallsDefaultCollapsed?: boolean;
   /** Open thinking blocks on mount ("Expand thinking blocks by default" in Settings). */
   expandThinkingByDefault?: boolean;
@@ -210,12 +212,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, forkEntryId, forkEditsPrompt, onFork, forking, forkDisabled, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, toolCallsDefaultCollapsed = true, expandThinkingByDefault = false, hideThinking = false, sourceBlockIndices, liveTokensPerSecond }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, forkEntryId, forkEditsPrompt, onFork, forking, forkDisabled, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, ompUiAction = null, toolCallsDefaultCollapsed = true, expandThinkingByDefault = false, hideThinking = false, sourceBlockIndices, liveTokensPerSecond }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} forkDisabled={forkDisabled} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} forkEntryId={forkEntryId} forkEditsPrompt={forkEditsPrompt} onFork={onFork} forking={forking} forkDisabled={forkDisabled} toolCallsDefaultCollapsed={toolCallsDefaultCollapsed} expandThinkingByDefault={expandThinkingByDefault} hideThinking={hideThinking} sourceBlockIndices={sourceBlockIndices} liveTokensPerSecond={liveTokensPerSecond} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} ompUiAction={ompUiAction} entryId={entryId} forkEntryId={forkEntryId} forkEditsPrompt={forkEditsPrompt} onFork={onFork} forking={forking} forkDisabled={forkDisabled} toolCallsDefaultCollapsed={toolCallsDefaultCollapsed} expandThinkingByDefault={expandThinkingByDefault} hideThinking={hideThinking} sourceBlockIndices={sourceBlockIndices} liveTokensPerSecond={liveTokensPerSecond} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -257,6 +259,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.showTimestamp === next.showTimestamp
     && prev.prevTimestamp === next.prevTimestamp
     && prev.sessionId === next.sessionId
+    && prev.ompUiAction === next.ompUiAction
     && prev.toolCallsDefaultCollapsed === next.toolCallsDefaultCollapsed
     && prev.expandThinkingByDefault === next.expandThinkingByDefault
     && prev.hideThinking === next.hideThinking
@@ -505,6 +508,7 @@ function AssistantMessageView({
   showTimestamp,
   prevTimestamp,
   sessionId,
+  ompUiAction,
   entryId,
   forkEntryId,
   forkEditsPrompt = false,
@@ -526,6 +530,7 @@ function AssistantMessageView({
   showTimestamp?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
+  ompUiAction?: OmpUiActionScope | null;
   entryId?: string;
   /** User entry omp's `branch` command accepts for this reply (see lib/chat-fork.ts). */
   forkEntryId?: string;
@@ -709,6 +714,7 @@ function AssistantMessageView({
             cwd={cwd}
             onOpenFile={onOpenFile}
             sessionId={sessionId}
+            ompUiAction={ompUiAction}
             entryId={entryId}
             blockIndex={originalIndex}
             toolCallsDefaultCollapsed={toolCallsDefaultCollapsed}
@@ -787,9 +793,9 @@ function AssistantMessageView({
   );
 }
 
-function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, sessionId, entryId, blockIndex, toolCallsDefaultCollapsed, expandThinkingByDefault }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; cwd?: string; onOpenFile?: (filePath: string) => void; sessionId?: string; entryId?: string; blockIndex: number; toolCallsDefaultCollapsed: boolean; expandThinkingByDefault: boolean }) {
+function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, sessionId, ompUiAction, entryId, blockIndex, toolCallsDefaultCollapsed, expandThinkingByDefault }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; cwd?: string; onOpenFile?: (filePath: string) => void; sessionId?: string; ompUiAction?: OmpUiActionScope | null; entryId?: string; blockIndex: number; toolCallsDefaultCollapsed: boolean; expandThinkingByDefault: boolean }) {
   if (block.type === "text") {
-    return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
+    return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} ompUiAction={ompUiAction} />;
   }
   if (block.type === "thinking") {
     return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} expandByDefault={expandThinkingByDefault} />;
@@ -808,13 +814,20 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
 // instead of object identity: finished blocks of the streaming message then
 // skip their ReactMarkdown re-parse and only the actively growing block
 // re-renders per frame.
-const TextBlock = memo(function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent; isStreaming?: boolean; cwd?: string; onOpenFile?: (filePath: string) => void }) {
-  return <div data-message-text><SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody></div>;
+const TextBlock = memo(function TextBlock({ block, isStreaming, cwd, onOpenFile, sessionId, ompUiAction }: { block: TextContent; isStreaming?: boolean; cwd?: string; onOpenFile?: (filePath: string) => void; sessionId?: string; ompUiAction?: OmpUiActionScope | null }) {
+  const send = !isStreaming && sessionId && ompUiAction?.sessionId === sessionId ? ompUiAction.send : null;
+  return (
+    <OmpUiActionContext.Provider key={sessionId} value={send}>
+      <div data-message-text><SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} ompUiActions={!!send}>{block.text}</SafeMarkdownBody></div>
+    </OmpUiActionContext.Provider>
+  );
 }, (prev, next) => (
   prev.block.text === next.block.text
   && prev.isStreaming === next.isStreaming
   && prev.cwd === next.cwd
   && prev.onOpenFile === next.onOpenFile
+  && prev.sessionId === next.sessionId
+  && prev.ompUiAction === next.ompUiAction
 ));
 
 const ThinkingBlock = memo(function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex, expandByDefault }: {
