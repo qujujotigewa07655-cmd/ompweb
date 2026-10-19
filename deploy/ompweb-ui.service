@@ -1,0 +1,21 @@
+[Unit]
+Description=OMPWeb OMP UI frontend (existing API owns agent sessions)
+Requires=ompweb.service
+After=ompweb.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/pi/ompweb-ui
+EnvironmentFile=/root/.omp/agent/web-service.env
+Environment="PATH=/root/.local/bin:/usr/bin:/usr/local/bin:/bin"
+Environment="OMP_WEB_FRONTEND_ONLY=1"
+Environment="OMP_WEB_DISABLE_AUTOUPDATE=1"
+ExecStart=/usr/bin/node /pi/ompweb-ui/node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 30178
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

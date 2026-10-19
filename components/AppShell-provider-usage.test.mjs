@@ -67,3 +67,10 @@ test("manual refresh gets fresh limits on older browsers while automatic polling
     if (sizeDescriptor) Object.defineProperty(URLSearchParams.prototype, "size", sizeDescriptor);
   }
 });
+
+test("a balance is rendered in its own unit, and cents never round to a bare integer", async () => {
+  const { formatUsageBalance } = await jiti.import("./AppShell-provider-usage.ts");
+  assert.equal(formatUsageBalance({ remaining: 3.903014962, unit: "usd" }), "$3.90");
+  assert.equal(formatUsageBalance({ remaining: 0, unit: "usd" }), "$0.00");
+  assert.equal(formatUsageBalance({ remaining: 125.5, unit: "credits" }), "125.5 credits");
+});

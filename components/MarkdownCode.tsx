@@ -1,5 +1,6 @@
 import type { HTMLAttributes } from "react";
 import { MermaidBlock, CodeBlock } from "./MermaidBlock";
+import { OmpUiBlock } from "./OmpUiBlock";
 
 /** Build the `code` renderer shared by MarkdownBody and FileViewer's
  * ReactMarkdown configs (the two previously inlined near-identical copies).
@@ -12,6 +13,7 @@ export function markdownCodeRenderer(options: {
   isStreaming?: boolean;
   defaultPreview?: boolean;
   inlineClassName?: string;
+  actionsEnabled?: boolean;
 }) {
   // `node` is react-markdown metadata, not a DOM attribute.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -22,6 +24,9 @@ export function markdownCodeRenderer(options: {
     if (isBlock) {
       if (lang === "mermaid") {
         return <MermaidBlock code={raw.replace(/\n$/, "")} isStreaming={options.isStreaming} defaultPreview={options.defaultPreview} />;
+      }
+      if (lang === "omp-ui") {
+        return <OmpUiBlock code={raw.replace(/\n$/, "")} isStreaming={options.isStreaming} actionsEnabled={options.actionsEnabled} />;
       }
       return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} isStreaming={options.isStreaming} />;
     }

@@ -13,6 +13,18 @@ Community: [Join the OMPWEB Discord](https://discord.gg/evqgGzRfM5)
 
 A clean, modern web UI for the [oh-my-pi (omp)](https://github.com/can1357/oh-my-pi) coding agent. It reads your local omp sessions and gives you a browser workspace to chat with the agent, browse projects, manage settings, and preview files.
 
+Local patch (2026-10-12): session-list previews scan bounded record prefixes
+when large startup service records push the first user message beyond the
+initial 4 KiB window. Explicit titles and session files are unchanged. This
+installation includes the fix in `lib/omp/session-files.ts` and the packaged
+server chunks; reinstalling or updating ompweb may overwrite the local patch.
+
+Local feature (2026-10-14): completed `omp-ui` JSON fences render native metric
+cards, tables, steps, SVG charts and typed forms. Assistant actions require an
+owning connected session and explicit confirmation; other views stay read-only.
+See [OMP UI usage, safety and deployment](docs/omp-ui.md) and the
+[agent skill](skills/omp-ui/SKILL.md). Ordinary Markdown and sanitization are unchanged.
+
 ![ompweb — live session demo](docs/demo.gif)
 
 <details>

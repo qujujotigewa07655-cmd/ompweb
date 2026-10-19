@@ -371,6 +371,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const activeSubagentCount = subagents.filter((subagent) => subagent.source !== "history" && subagent.status === "started").length;
 
   const eventSourceRef = useRef<EventSource | null>(null);
+  const [ompUiConnectedSessionId, setOmpUiConnectedSessionId] = useState<string | null>(null);
+  const [ompUiHydrating, setOmpUiHydrating] = useState(!isNew);
+  const ompUiHydratingRef = useRef(!isNew);
   const reconnectTimerRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const eventStreamRetryMsRef = useRef<number>(EVENT_STREAM_RETRY_MIN_MS);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
@@ -799,6 +802,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const position = catchUp.position();
     const metadataVersion = authoritativeModelSeqRef.current;
     let messagesLoaded = false;
+    if (showLoading && includeState) {
+      ompUiHydratingRef.current = true;
+      setOmpUiHydrating(true);
+    }
     try {
       if (showLoading) setLoading(true);
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
@@ -916,6 +923,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (showLoading && includeState) initialHydrationPendingRef.current = false;
       return null;
     } finally {
+      if (showLoading && includeState) {
+        ompUiHydratingRef.current = false;
+        setOmpUiHydrating(false);
+      }
       if (showLoading && !messagesLoaded) setLoading(false);
       // Ensure the flag is cleared even if the pre-state early-return path was taken
       if (showLoading && includeState && !messagesLoaded) initialHydrationPendingRef.current = false;
@@ -1103,6 +1114,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [applyQueueStateSnapshot, applySkillDiagnosticsSnapshot]);
 
   const connectEvents = useCallback((sid: string, restoreWrapper = false): Promise<EventStreamConnectionResult> => {
+    setOmpUiConnectedSessionId(null);
     // A backoff timer from an earlier CLOSED stream may still be pending (e.g.
     // the user sent a message while it waited). It must not fire later and
     // tear down the healthy stream built here — drop it before replacing.
@@ -1140,6 +1152,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // resets retry backoff and catches up the persisted transcript.
       es.onopen = () => {
         if (eventSourceRef.current !== es || sessionIdRef.current !== sid) return;
+        setOmpUiConnectedSessionId(sid);
         eventStreamRetryMsRef.current = EVENT_STREAM_RETRY_MIN_MS;
         settle("connected");
         restore();
@@ -1179,6 +1192,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             void catchUp.request();
           }
           if (event.type === "connected") {
+            if (es.readyState === EventSource.OPEN) setOmpUiConnectedSessionId(sid);
             settle("connected");
             restore();
             void catchUp.request();
@@ -1192,6 +1206,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
       };
       es.onerror = () => {
+        if (eventSourceRef.current !== es || sessionIdRef.current !== sid) return;
+        setOmpUiConnectedSessionId(null);
         if (es.readyState === EventSource.CLOSED) {
           // Fatal error (404/409/500/content-type mismatch): the browser will
           // not auto-reconnect. Settle the Promise and schedule a manual
@@ -1455,7 +1471,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       clearTimeout(slowNotice);
     }
     if (result.status === "connected" || result.source.readyState === EventSource.OPEN) return;
-    if (eventSourceRef.current === result.source) eventSourceRef.current = null;
+    if (eventSourceRef.current === result.source) {
+      eventSourceRef.current = null;
+      setOmpUiConnectedSessionId(null);
+    }
     result.source.close();
     throw new EventStreamConnectionError(result.status);
   }, [addNotice, connectEvents]);
@@ -1799,6 +1818,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     () => !agentRunning && !bashRunning && looksLikeRunningTurn(messages),
     [agentRunning, bashRunning, messages],
   );
+  const ompUiViewRef = useRef({ loading, error, externalRunActive, sessionId: session?.id ?? sessionIdRef.current });
+  ompUiViewRef.current = { loading, error, externalRunActive, sessionId: session?.id ?? sessionIdRef.current };
+  const canSubmitOmpUiAction = useCallback((sid: string) => {
+    const view = ompUiViewRef.current;
+    return hookAliveRef.current && sessionIdRef.current === sid && view.sessionId === sid
+      && !view.loading && !view.error && !view.externalRunActive
+      && !ompUiHydratingRef.current && !initialHydrationPendingRef.current
+      && !catchUp.view().leafId && eventSourceRef.current?.readyState === EventSource.OPEN;
+  }, [catchUp]);
+  const ompUiWritable = !ompUiHydrating && !!ompUiConnectedSessionId && canSubmitOmpUiAction(ompUiConnectedSessionId);
   // Wall-clock of the last transcript change; bounds the poll so a permanently
   // "awaiting a tool result" tail (crashed foreign omp, interrupted run) does
   // not re-read the session file forever.
@@ -2607,11 +2636,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return snapshot.entryIds;
   }, []);
 
-  const handleSend = useCallback(async (message: string, images?: AttachedImage[]): Promise<boolean> => {
+  const handleSend = useCallback(async (message: string, images?: AttachedImage[], options: { restoreDraftOnError?: boolean; reuseConnectedStream?: boolean; canDispatch?: () => boolean } = {}): Promise<boolean> => {
     const trimmedMessage = message.trim();
     if (!trimmedMessage && !images?.length) return false;
     if (agentRunningRef.current || bashRunningRef.current) return false;
     if (initialHydrationPendingRef.current) return false;
+    if (options.canDispatch && !options.canDispatch()) return false;
     const isSlashCommandPrompt = !images?.length && trimmedMessage.startsWith("/");
     // omp runs TUI-only commands such as `/guided-goal` nowhere but its own
     // terminal, so over RPC the text is sent as an ordinary prompt and the turn
@@ -2706,13 +2736,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           // EventSource now would leak it, since this instance's unmount
           // cleanup already ran.
           if (!ownerGone) {
-            await ensureEventsConnected(sid);
+            if (!options.reuseConnectedStream || eventSourceRef.current?.readyState !== EventSource.OPEN) await ensureEventsConnected(sid);
             void refreshSubagentRoster(sid);
           }
           if (existingSid) {
             const previousEntryIds = await snapshotRunEntries(sid);
             if (promptRunIdRef.current === promptRunId) runPreviousEntryIdsRef.current = previousEntryIds;
           }
+          if (options.canDispatch && !options.canDispatch()) throw new Error("Действие отменено: сессия изменилась или соединение потеряно.");
           queuedBehindShell = isQueuedWhileShellRunning(await sendAgentCommand(sid, {
             type: "prompt",
             message,
@@ -2724,7 +2755,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         // The event route is observer-only. Start or resume the web-owned RPC
         // wrapper with a supported command before opening the SSE connection.
         await sendAgentCommand(session.id, { type: "get_state" });
-        await ensureEventsConnected(session.id);
+        if (options.canDispatch && !options.canDispatch()) throw new Error("Действие отменено: сессия изменилась или соединение потеряно.");
+        if (!options.reuseConnectedStream || eventSourceRef.current?.readyState !== EventSource.OPEN) await ensureEventsConnected(session.id);
         void refreshSubagentRoster(session.id);
         void registerHostTools(session.id);
         void registerHostUriSchemes(session.id);
@@ -2732,6 +2764,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (promptRunIdRef.current === promptRunId && sessionIdRef.current === session.id) {
           runPreviousEntryIdsRef.current = previousEntryIds;
         }
+        if (options.canDispatch && !options.canDispatch()) throw new Error("Действие отменено: сессия изменилась или соединение потеряно.");
         queuedBehindShell = isQueuedWhileShellRunning(await sendAgentCommand(session.id, {
           type: "prompt",
           message,
@@ -2778,7 +2811,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // Restore the user's text into the input instead of losing it. Mirrors the
       // shell-command recovery in executeBash; insertIfEmpty avoids clobbering
       // anything typed since.
-      if (message) opts.chatInputRef?.current?.insertIfEmpty(message);
+      if (message && options.restoreDraftOnError !== false) opts.chatInputRef?.current?.insertIfEmpty(message);
       agentRunningRef.current = false;
       catchUp.invalidate();
       eventCoalescer.reset();
@@ -3946,6 +3979,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // Actions
     handleSend, handleAbort, handleFork, handleNavigate, handleModelChange, handleFastModeChange, handleSlowModeChange, handleAutoRetryChange, handleInterruptModeChange, handleAutoCompactionChange, handleSteeringModeChange, handleFollowUpModeChange, handleCycleModel, handleCycleThinkingLevel, handleAbortRetry, handleInterruptAndReply, setSkillStartupDiagnostics,
     retrySession: () => { const sid = sessionIdRef.current; if (sid) void loadSession(sid, true, true); },
+    ompUiWritable, canSubmitOmpUiAction,
     handleCompact, handleHandoff, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     handleBuiltinSlashCommand, togglePreCompactionHistory,
     handleToolPresetChange, handleThinkingLevelChange, loadSlashCommands, removeQueuedMessage, promoteQueuedToSteer, setActiveLeafId, setData, setMessages,

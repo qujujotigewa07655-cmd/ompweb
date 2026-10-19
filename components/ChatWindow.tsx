@@ -1,7 +1,7 @@
 "use client";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { ArrowDown, ChevronDown, ChevronUp, Layers, Paperclip, Square } from "lucide-react";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage } from "@/lib/types";
 import { translate, useI18n } from "@/lib/i18n";
@@ -38,6 +38,7 @@ import {
   VISIBLE_PAGE_SIZE,
 } from "@/lib/chat-lazy-load";
 import { getDraftSummary } from "@/lib/draft-store";
+import { createOmpUiActionHandler, type OmpUiActionScope } from "@/lib/omp-ui-actions";
 
 interface Props {
   session: SessionInfo | null;
@@ -270,6 +271,7 @@ interface CommittedTranscriptProps {
   messageCwd: string | undefined;
   onOpenFile?: (filePath: string) => void;
   sessionId: string | undefined;
+  ompUiAction: OmpUiActionScope | null;
   toolCallsDefaultCollapsed: boolean;
   expandThinkingByDefault: boolean;
   hideThinkingBlock: boolean;
@@ -291,7 +293,7 @@ interface CommittedTranscriptProps {
  */
 const CommittedTranscript = memo(function CommittedTranscript({
   messages, entryIds, conversationMeta, messageRefs, isStreaming, sessionBusy, externalRunActive, isNew, forkingEntryId,
-  handleFork, handleNavigate, handleEditContent, modelNames, messageCwd, onOpenFile, sessionId,
+  handleFork, handleNavigate, handleEditContent, modelNames, messageCwd, onOpenFile, sessionId, ompUiAction,
   toolCallsDefaultCollapsed, expandThinkingByDefault, hideThinkingBlock, visibleCount, nearBottom, sentinelRef, handleLoadMoreClick,
 }: CommittedTranscriptProps) {
   const { t } = useI18n();
@@ -348,6 +350,7 @@ const CommittedTranscript = memo(function CommittedTranscript({
         showTimestamp={showTimestamp}
         prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
         sessionId={sessionId}
+        ompUiAction={msg.role === "assistant" ? ompUiAction : null}
         toolCallsDefaultCollapsed={toolCallsDefaultCollapsed}
         expandThinkingByDefault={expandThinkingByDefault}
         hideThinking={hideThinkingBlock}
@@ -499,6 +502,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     loading, error, messages, entryIds, showPreCompactionHistory, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelsLoading, modelError, modelThinkingLevels, modelThinkingLevelMaps, thinkingLevel, fastModeEnabled, fastModeActive, slowModeSupported, slowModeEnabled, slowModeScope, usageLimit,
     externalRunActive,
+    ompUiWritable, canSubmitOmpUiAction,
     toolPreset,
     liveModelMeta,
     retryInfo, contextUsage, forkingEntryId,
@@ -531,6 +535,30 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     if (speech) ttsRef.current.speak(speech.id, speech.text);
   }, [messages, entryIds, streamState, agentRunning]);
   const sessionBusy = agentRunning || bashRunning;
+  const ompUiSessionId = session?.id ?? sessionIdRef.current;
+  const ompUiOwner = useMemo(() => ({ sessionId: ompUiSessionId }), [ompUiSessionId]);
+  const ompUiMountedRef = useRef(true);
+  useLayoutEffect(() => {
+    ompUiMountedRef.current = true;
+    return () => { ompUiMountedRef.current = false; };
+  }, []);
+  const ompUiStateRef = useRef({ owner: ompUiOwner, sessionBusy, handleSend, handlePromptWithStreamingBehavior, canSubmitOmpUiAction });
+  ompUiStateRef.current = { owner: ompUiOwner, sessionBusy, handleSend, handlePromptWithStreamingBehavior, canSubmitOmpUiAction };
+  const ompUiActionScope = useMemo<OmpUiActionScope | null>(() => {
+    const sessionId = ompUiOwner.sessionId;
+    if (!sessionId) return null;
+    const canDispatch = () => ompUiMountedRef.current && ompUiStateRef.current.owner === ompUiOwner && ompUiStateRef.current.canSubmitOmpUiAction(sessionId);
+    return {
+      sessionId,
+      send: createOmpUiActionHandler({
+        canSend: canDispatch,
+        isBusy: () => ompUiStateRef.current.sessionBusy,
+        send: (message) => ompUiStateRef.current.handleSend(message, undefined, { restoreDraftOnError: false, reuseConnectedStream: true, canDispatch }),
+        followUp: (message) => ompUiStateRef.current.handlePromptWithStreamingBehavior(message, "followUp"),
+      }),
+    };
+  }, [ompUiOwner]);
+  const ompUiAction = ompUiWritable ? ompUiActionScope : null;
   const modelCapacity = useMemo(() => {
     if (!displayModelValue) return null;
     const model = modelList.find((entry) => entry.provider === displayModelValue.provider && entry.id === displayModelValue.modelId);
@@ -1280,6 +1308,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
               messageCwd={messageCwd}
               onOpenFile={onOpenFile}
               sessionId={session?.id ?? sessionIdRef.current ?? undefined}
+              ompUiAction={ompUiAction}
               toolCallsDefaultCollapsed={toolCallsDefaultCollapsed}
               expandThinkingByDefault={expandThinkingByDefault}
               hideThinkingBlock={hideThinkingBlock}
@@ -1292,6 +1321,8 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
               <MessageView
                 key={streamState.streamingMessage.timestamp ?? "stream"}
                 message={streamState.streamingMessage as AgentMessage}
+                isStreaming
+                sessionId={ompUiSessionId ?? undefined}
                 modelNames={modelNames}
                 cwd={messageCwd}
                 onOpenFile={onOpenFile}

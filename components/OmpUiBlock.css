@@ -1,0 +1,79 @@
+.omp-ui {
+  min-width: 0;
+  max-width: 100%;
+  margin-block: 12px;
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.omp-ui *, .omp-ui *::before, .omp-ui *::after { box-sizing: border-box; }
+.omp-ui h3, .omp-ui p, .omp-ui figure, .omp-ui dl { margin: 0; }
+.omp-ui > p { margin-block: 8px; }
+.omp-ui h3, .omp-ui figcaption { font-size: 1rem; font-weight: 600; }
+.omp-ui-toolbar, .omp-ui-toolbar > div { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.omp-ui-toolbar { justify-content: space-between; margin-block-end: 8px; color: var(--text-muted); }
+.omp-ui button, .omp-ui select, .omp-ui input {
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+  font: inherit;
+  min-height: 36px;
+  max-width: 100%;
+  padding: 6px 10px;
+}
+.omp-ui button { cursor: pointer; white-space: normal; overflow-wrap: anywhere; }
+.omp-ui button:hover:not(:disabled) { background: var(--bg-hover); }
+.omp-ui :is(button, input, select, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.omp-ui :is(button, input, select):disabled { cursor: not-allowed; opacity: 0.65; }
+.omp-ui .omp-ui-submit { background: var(--accent-strong); color: var(--on-accent); justify-self: start; }
+.omp-ui .omp-ui-submit:hover:not(:disabled) { background: var(--accent-hover); }
+.omp-ui-panel, .omp-ui-form, .omp-ui-stat, .omp-ui-chart {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 8px);
+  background: var(--bg-panel);
+}
+.omp-ui-stack, .omp-ui-panel, .omp-ui-form, .omp-ui-stat, .omp-ui-chart { display: grid; gap: 10px; }
+.omp-ui-text { white-space: pre-wrap; }
+.omp-ui-hint { color: var(--text-muted); font-size: 0.8125rem; }
+.omp-ui-stat strong { font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+.omp-ui-stat small { font-size: 0.8125rem; font-weight: normal; }
+.omp-ui-tone-success { border-inline-start: 3px solid var(--status-success); }
+.omp-ui-tone-warning { border-inline-start: 3px solid var(--status-warning); }
+.omp-ui-tone-error { border-inline-start: 3px solid var(--status-error); }
+.omp-ui-keyvalue > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px; padding-block: 6px; border-block-end: 1px solid var(--border); }
+.omp-ui dt { color: var(--text-muted); }
+.omp-ui dd { margin: 0; white-space: pre-wrap; }
+.omp-ui-table-scroll { overflow-x: auto; max-width: 100%; min-width: 0; }
+.omp-ui table { border-collapse: collapse; width: 100%; font-size: 0.8125rem; }
+.omp-ui caption { text-align: start; font-weight: 600; padding-block: 6px; }
+.omp-ui th, .omp-ui td { padding: 6px 10px; text-align: start; border-block-end: 1px solid var(--border); white-space: pre-wrap; min-width: 70px; font-variant-numeric: tabular-nums; }
+.omp-ui th { color: var(--text-muted); }
+.omp-ui-steps { margin: 0; padding-inline-start: 24px; display: grid; gap: 10px; list-style: decimal; }
+.omp-ui-steps li > span { margin-inline-start: 8px; color: var(--text-muted); font-size: 0.8125rem; }
+.omp-ui-steps li::marker { color: var(--text-muted); }
+.omp-ui-step-error { border-inline-start: 3px solid var(--status-error); padding-inline-start: 8px; }
+.omp-ui-step-done { border-inline-start: 3px solid var(--status-success); padding-inline-start: 8px; }
+.omp-ui-step-active { border-inline-start: 3px solid var(--accent); padding-inline-start: 8px; }
+.omp-ui-chart svg { width: 100%; max-width: 100%; height: auto; overflow: visible; }
+.omp-ui-chart svg :is(rect, circle) { fill: var(--accent); }
+.omp-ui-chart polyline { stroke: var(--accent); stroke-width: 2; }
+.omp-ui-chart .omp-ui-axis { stroke: var(--text-muted); stroke-width: 1; }
+.omp-ui-chart text { fill: var(--text-muted); font-size: 10px; }
+.omp-ui summary { cursor: pointer; min-height: 32px; padding-block: 6px; }
+.omp-ui-form fieldset { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: 10px; }
+.omp-ui-form :is(input:not([type=checkbox]), select) { width: 100%; min-width: 0; }
+.omp-ui-form input[type=checkbox] { width: 24px; height: 24px; min-height: 24px; accent-color: var(--accent); }
+.omp-ui-form [role=alert], .omp-ui > [role=alert] { color: var(--status-error); }
+.omp-ui-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.omp-ui-confirm-error { display: block; margin-block-start: 12px; color: var(--status-error); overflow-wrap: anywhere; }
+@media (pointer: coarse) {
+  .omp-ui :is(button, input:not([type=checkbox]), select, summary) { min-height: 44px; }
+}
+@media (max-width: 360px) {
+  .omp-ui-panel, .omp-ui-form, .omp-ui-chart { padding: 8px; }
+  .omp-ui-keyvalue > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}

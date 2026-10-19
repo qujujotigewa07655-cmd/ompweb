@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import { Check, ChevronRight, Gauge, RefreshCw } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { formatUsageReset, usageTone, useProviderUsage } from "./AppShell-provider-usage";
-import type { ProviderUsageReport, ProviderUsageWindow } from "@/lib/provider-usage-types";
+import { formatUsageBalance, formatUsageReset, usageTone, useProviderUsage } from "./AppShell-provider-usage";
+import type { ProviderUsageBalance, ProviderUsageReport, ProviderUsageWindow } from "@/lib/provider-usage-types";
 import { SidebarIconButton } from "./SessionSidebar-chrome";
 import { Tooltip } from "./ui/primitives";
 
@@ -87,10 +87,20 @@ export function ProviderUsageBar() {
   }, []);
 
   let worst: { percent: number; window: string } | null = null;
+  // A balance-only provider reports no percentage at all; without this the
+  // header would claim "no provider limits reported" while the row shows money.
+  // The header and row carry the primary balance — the account's own money.
+  // Narrower per-key caps stay in the expansion, so a nearly exhausted key
+  // never hides how much the account actually holds.
+  let primaryBalance: ProviderUsageBalance | null = null;
   for (const report of reports) {
     const best = worstWindow(report);
     if (best && (worst === null || best.window.percent > worst.percent)) {
       worst = { percent: Math.round(best.window.percent), window: best.short };
+    }
+    const balance = report.balances?.[0];
+    if (balance && (primaryBalance === null || balance.remaining < primaryBalance.remaining)) {
+      primaryBalance = balance;
     }
   }
 
@@ -161,8 +171,12 @@ export function ProviderUsageBar() {
             : error
               ? t("appShell.providerUsageUnavailable")
               : worst
-                ? t("providerUsage.highest", { percent: worst.percent, window: worst.window })
-                : t("appShell.providerUsageNoData")}
+                ? primaryBalance
+                  ? t("providerUsage.highestAndBalance", { percent: worst.percent, window: worst.window, amount: formatUsageBalance(primaryBalance) })
+                  : t("providerUsage.highest", { percent: worst.percent, window: worst.window })
+                : primaryBalance
+                  ? t("providerUsage.balance", { amount: formatUsageBalance(primaryBalance) })
+                  : t("appShell.providerUsageNoData")}
         </span>
       </button>
         <Tooltip content={t("sessionSidebar.refresh")} side="top">
@@ -188,14 +202,27 @@ export function ProviderUsageBar() {
         const key = `${report.provider}:${account}:${report.modelId ?? "all"}:${index}`;
         const best = worstWindow(report);
         const expanded = expandedKey === key;
+        // A dollar/credit balance has no percentage window: show the money the
+        // provider reports instead of a 0% bar or the "∞" no-limits mark. The
+        // row carries the primary balance; the expansion lists each one.
+        const balances = report.balances ?? [];
+        const primary = balances[0];
+        const balance = primary ? formatUsageBalance(primary) : null;
         const pct = best ? Math.round(best.window.percent) : 0;
         const tone = usageTone(pct);
+        const expandable = !report.noLimits && (best !== null || balances.length > 0);
+        // The bar follows money spent against the reported cap; a balance
+        // without a cap (pure prepaid credit) has nothing to fill.
+        const balanceFraction = primary?.limit && primary.used !== undefined
+          ? Math.min(100, Math.max(0, (primary.used / primary.limit) * 100))
+          : null;
+        const barPct = best ? pct : balanceFraction;
         return (
           <div key={key} style={{ borderRadius: "var(--radius-control)", background: expanded ? "var(--bg-subtle)" : "transparent" }}>
             <button
               type="button"
               onClick={() => setExpandedKey((prev) => (prev === key ? null : key))}
-              aria-expanded={report.noLimits ? undefined : expanded}
+              aria-expanded={expandable ? expanded : undefined}
               title={account}
               style={{
                 display: "flex",
@@ -206,12 +233,12 @@ export function ProviderUsageBar() {
                 padding: "5px 6px 4px",
                 background: "none",
                 border: "none",
-                cursor: report.noLimits ? "default" : "pointer",
+                cursor: expandable ? "pointer" : "default",
                 textAlign: "left",
                 minWidth: 0,
               }}
             >
-              {!report.noLimits && (
+              {expandable && (
                 <ChevronRight
                   size={11}
                   strokeWidth={2}
@@ -230,7 +257,11 @@ export function ProviderUsageBar() {
               <span style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
                 {account}
               </span>
-              {report.noLimits ? (
+              {balance ? (
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: "var(--text)", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
+                  {balance}
+                </span>
+              ) : report.noLimits ? (
                 <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>∞</span>
               ) : (
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: tone, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
@@ -238,13 +269,33 @@ export function ProviderUsageBar() {
                 </span>
               )}
             </button>
-            {!report.noLimits && (
+            {barPct !== null && (
               <div style={{ height: 3, margin: "0 6px 0 23px", borderRadius: 2, background: "var(--border)", overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${Math.min(100, Math.max(0, pct))}%`, background: tone, borderRadius: 2 }} />
+                <div style={{ height: "100%", width: `${Math.min(100, Math.max(0, barPct))}%`, background: best ? tone : usageTone(barPct), borderRadius: 2 }} />
               </div>
             )}
-            {expanded && !report.noLimits && (
+            {expanded && (
               <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 8px 7px 23px", fontFamily: "var(--font-mono)" }}>
+                {balances.map((entry, entryIndex) => (
+                  <span
+                    key={entry.label ?? entryIndex}
+                    style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}
+                  >
+                    <span style={{ minWidth: 22, flexShrink: 0, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                      {entry.label ?? t("providerUsage.balanceShort")}
+                    </span>
+                    <span style={{ color: "var(--text)", fontWeight: 700 }}>
+                      {formatUsageBalance(entry)}
+                    </span>
+                    {entry.used !== undefined && entry.limit !== undefined && (
+                      <span>
+                        {formatUsageBalance({ ...entry, remaining: entry.used })}
+                        {" / "}
+                        {formatUsageBalance({ ...entry, remaining: entry.limit })}
+                      </span>
+                    )}
+                  </span>
+                ))}
                 {WINDOWS.map((def) => {
                   const window = def.pick(report);
                   return window ? <DetailMeter key={def.short} short={def.short} window={window} t={t} /> : null;

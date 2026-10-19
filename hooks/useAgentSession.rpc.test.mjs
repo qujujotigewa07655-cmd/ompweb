@@ -3656,3 +3656,120 @@ test("a fresh chat's /btw question attaches one event stream instead of an obser
   assert.equal(streamsBeforeOpen, 1, "the question owns the only stream");
   assert.equal(world.esInstances.length, 1);
 });
+
+test("OMP UI capability follows hydrated owned SSE readiness, including idle and reconnect", async () => {
+  resetWorld();
+  primeSession("ui-ready", [userMsg("u0", "question"), assistantMsg("a0", "answer")]);
+  world.agents.set("ui-ready", { running: true, state: { isStreaming: false, isPromptRunning: false } });
+  const w = await mountSession("ui-ready");
+  const es = lastEs();
+  assert.equal(w.latest.ompUiWritable, false, "CONNECTING is not a writable capability");
+  assert.equal(w.latest.canSubmitOmpUiAction("ui-ready"), false);
+  await act(async () => { es.open(); });
+  assert.equal(w.latest.agentRunning, false);
+  assert.equal(w.latest.ompUiWritable, true, "an idle connected owner can use a card");
+  assert.equal(w.latest.canSubmitOmpUiAction("other"), false);
+
+  let releaseState;
+  world.holds.push({
+    match: (method, url) => method === "GET" && url === "/api/sessions/ui-ready/state",
+    produce: () => new Promise((resolve) => { releaseState = resolve; }),
+  });
+  await act(async () => { w.latest.retrySession(); await sleep(30); });
+  assert.equal(w.latest.ompUiWritable, false, "readiness waits for state hydration after history loads");
+  assert.equal(w.latest.canSubmitOmpUiAction("ui-ready"), false);
+  await act(async () => {
+    releaseState({ value: { running: true, state: { isStreaming: false, isPromptRunning: false } } });
+    await sleep(30);
+  });
+  assert.equal(w.latest.ompUiWritable, true);
+  await act(async () => {
+    es.readyState = FakeEventSource.CONNECTING;
+    es.onerror?.({});
+  });
+  assert.equal(w.latest.ompUiWritable, false);
+  assert.equal(w.latest.canSubmitOmpUiAction("ui-ready"), false);
+  await act(async () => { es.open(); });
+  assert.equal(w.latest.ompUiWritable, true);
+  const canSubmit = w.latest.canSubmitOmpUiAction;
+  w.unmount();
+  assert.equal(canSubmit("ui-ready"), false, "captured capabilities die with their owner");
+});
+
+test("OMP UI stays readonly in a cold archive or an externally running transcript", async () => {
+  resetWorld();
+  primeSession("ui-archive", [userMsg("u0", "question"), assistantMsg("a0", "answer")]);
+  const archive = await mountSession("ui-archive");
+  assert.equal(archive.latest.ompUiWritable, false);
+  assert.equal(archive.latest.canSubmitOmpUiAction("ui-archive"), false);
+  archive.unmount();
+  primeSession("ui-external", [userMsg("u0", "question"), {
+    role: "assistant", content: [{ type: "toolCall", toolCallId: "pending", toolName: "read", input: { path: "file" } }],
+  }]);
+  const external = await mountSession("ui-external");
+  assert.equal(external.latest.externalRunActive, true);
+  assert.equal(external.latest.ompUiWritable, false);
+});
+
+test("OMP UI sends wrapped prompts, queues busy follow-ups and preserves the connected owner", async () => {
+  const { createOmpUiActionHandler } = await jiti.import("@/lib/omp-ui-actions");
+  resetWorld();
+  primeSession("ui-dispatch", [userMsg("u0", "question"), assistantMsg("a0", "answer")]);
+  world.agents.set("ui-dispatch", { running: true, state: { isStreaming: false, isPromptRunning: false } });
+  const draftWrites = [];
+  const w = await mountSession("ui-dispatch", undefined, { chatInputRef: { current: { insertIfEmpty: (text) => draftWrites.push(text) } } });
+  const es = lastEs();
+  await act(async () => { es.open(); });
+  const canDispatch = () => w.latest.canSubmitOmpUiAction("ui-dispatch");
+  const send = createOmpUiActionHandler({
+    canSend: canDispatch,
+    isBusy: () => w.latest.agentRunning || w.latest.bashRunning,
+    send: (message) => w.latest.handleSend(message, undefined, { restoreDraftOnError: false, reuseConnectedStream: true, canDispatch }),
+    followUp: (message) => w.latest.handlePromptWithStreamingBehavior(message, "followUp"),
+  });
+  await act(async () => { assert.equal(await send("!literal shell text"), true); });
+  assert.equal(w.latest.ompUiWritable, true);
+  assert.equal(lastEs(), es, "sending must not revoke a card's form state by replacing healthy SSE");
+  await act(async () => { assert.equal(await send("/compact"), true); });
+  const prompts = world.calls.filter((call) => call.body?.type === "prompt").map((call) => call.body);
+  assert.deepEqual(prompts, [
+    { type: "prompt", message: "OMP UI — действие пользователя:\n!literal shell text" },
+    { type: "prompt", message: "OMP UI — действие пользователя:\n/compact", streamingBehavior: "followUp" },
+  ]);
+  assert.equal(world.calls.some((call) => call.body?.type === "bash"), false);
+  assert.deepEqual(draftWrites, []);
+});
+
+test("OMP UI revokes an idle send before prompt dispatch without restoring it into the composer", async () => {
+  resetWorld();
+  primeSession("ui-stale", [userMsg("u0", "question"), assistantMsg("a0", "answer")]);
+  world.agents.set("ui-stale", { running: true, state: { isStreaming: false, isPromptRunning: false } });
+  const draftWrites = [];
+  const w = await mountSession("ui-stale", undefined, { chatInputRef: { current: { insertIfEmpty: (text) => draftWrites.push(text) } } });
+  await act(async () => { lastEs().open(); });
+  let currentOwner = true;
+  let releaseBoundary;
+  world.holds.push({
+    match: (method, url) => method === "GET" && url === "/api/sessions/ui-stale/context?boundary=1",
+    produce: () => new Promise((resolve) => { releaseBoundary = resolve; }),
+  });
+  let sending;
+  await act(async () => {
+    sending = w.latest.handleSend("OMP UI — действие пользователя:\nold action", undefined, {
+      restoreDraftOnError: false, reuseConnectedStream: true,
+      canDispatch: () => currentOwner && w.latest.canSubmitOmpUiAction("ui-stale"),
+    });
+    await sleep(30);
+  });
+  currentOwner = false;
+  await act(async () => { releaseBoundary({ value: { entryIds: ["e0", "e1"] } }); assert.equal(await sending, false); });
+  assert.equal(world.calls.some((call) => call.body?.type === "prompt"), false);
+  assert.deepEqual(draftWrites, []);
+
+  world.holds.push({
+    match: (method, _url, body) => method === "POST" && body?.type === "get_state",
+    produce: async () => ({ status: 500, value: { error: "transport failure" } }),
+  });
+  await act(async () => { assert.equal(await w.latest.handleSend("ordinary composer draft"), false); });
+  assert.deepEqual(draftWrites, ["ordinary composer draft"], "normal composer recovery keeps its default behavior");
+});

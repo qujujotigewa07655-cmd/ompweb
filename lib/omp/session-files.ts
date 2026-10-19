@@ -881,10 +881,48 @@ function readTextSlices(filePath: string, prefixBytes: number, suffixBytes: numb
   }
 }
 
+/** Skip oversized service records without retaining their bodies. Each record
+ * uses the same bounded preview as the fast session-list prefix scan. */
+function readFirstUserMessage(filePath: string): string {
+  const fd = openSync(filePath, "r");
+  const chunk = Buffer.allocUnsafe(SESSION_LIST_PREFIX_BYTES);
+  const line = Buffer.allocUnsafe(SESSION_LIST_PREFIX_BYTES);
+  let length = 0;
+  const preview = () => {
+    const text = line.subarray(0, length).toString("utf8");
+    return extractStringProperty(text, "type") === "message" &&
+      extractStringProperty(text, "role") === "user"
+      ? extractFirstDisplayMessageFromPrefix(text) ?? ""
+      : "";
+  };
+  try {
+    let count: number;
+    while ((count = readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      let start = 0;
+      while (start < count) {
+        const newline = chunk.indexOf(10, start);
+        const end = newline >= 0 && newline < count ? newline : count;
+        const copied = Math.min(end - start, line.length - length);
+        chunk.copy(line, length, start, start + copied);
+        length += copied;
+        if ((copied > 0 && length === line.length) || end < count) {
+          const message = preview();
+          if (message) return message;
+        }
+        if (end < count) length = 0;
+        start = end + 1;
+      }
+    }
+    return preview();
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
- * Scan a single session file into an OmpSessionInfo using only a 4 KiB prefix
- * window (plus a 32 KiB tail window when `withStatus` is set). Faithful port
- * of omp's scanSessionFile — messageCount is a prefix-derived lower bound.
+ * Scan a 4 KiB prefix and optional 32 KiB tail. If the user message is outside
+ * the prefix, scan bounded record previews until it is found. messageCount
+ * remains a prefix-derived lower bound.
  */
 export function scanSessionInfo(filePath: string, withStatus = true): OmpSessionInfo | undefined {
   try {
@@ -913,6 +951,7 @@ export function scanSessionInfo(filePath: string, withStatus = true): OmpSession
       }
     }
 
+    firstMessage ||= readFirstUserMessage(filePath);
     firstMessage ||= extractFirstDisplayMessageFromPrefix(content) ?? "";
     const messageCount = Math.max(parsedMessageCount, countMessageMarkers(content));
     return {
