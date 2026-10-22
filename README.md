@@ -413,8 +413,10 @@ apk, tar (plain or gz/bz2/xz), single-file gz/bz2/xz streams, and 7z/rar
 through the `7z` command-line tool. Text members at the first level become
 extracted sections; a PDF, DOCX or XLSX member is copied to a bounded
 temporary file, parsed by its normal extractor under the member path and
-removed again. Binary and nested-archive members are skipped, and an archive
-with no readable text is attached as its original. Archives that expand
+removed again. Binary and nested-archive members are skipped; an archive whose
+members are all binary yields a contents listing (names and sizes) instead of
+empty sections, and an empty or unreadable archive is attached as its original.
+Archives that expand
 beyond 512 MiB or hold more than 20,000 entries fail with an explicit safety
 error.
 ## Environment Variables

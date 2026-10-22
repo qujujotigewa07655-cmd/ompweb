@@ -17,21 +17,48 @@ import xml.etree.ElementTree as ET
 
 
 SECTION_PREFIX = ""
+EMITTED = 0
 
 
 def emit(location, text):
     # A pathological page/paragraph/row must not create an unbounded IPC frame.
+    global EMITTED
     where = f"{SECTION_PREFIX} · {location}" if SECTION_PREFIX else location
     for offset in range(0, len(text), 16384):
         chunk = text[offset:offset + 16384]
         if chunk.strip():
             print(json.dumps({"location": where, "text": chunk}, ensure_ascii=True), flush=True)
+            EMITTED += 1
+
+
+def format_bytes(size):
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
+
+
+def emit_manifest(entries):
+    """No text member: describe the archive instead of returning nothing, so the
+    caller knows what is inside without unpacking it first."""
+    if not entries:
+        # Nothing at all: the caller attaches the original without sections.
+        return
+    total = sum(size for _, size in entries)
+    lines = [f"Archive contents: {len(entries)} file(s), {format_bytes(total)} uncompressed. No text members were extracted."]
+    for name, size in sorted(entries, key=lambda entry: entry[1], reverse=True)[:MANIFEST_LIMIT]:
+        lines.append(f"{name} ({format_bytes(size)})")
+    if len(entries) > MANIFEST_LIMIT:
+        lines.append(f"... and {len(entries) - MANIFEST_LIMIT} more file(s)")
+    emit("Archive contents", "\n".join(lines))
 
 
 TEXT_MEMBER_LIMIT = 8 * 1024 * 1024
 ARCHIVE_EXPANDED_LIMIT = 512 * 1024 * 1024
 ARCHIVE_ENTRY_LIMIT = 20000
 DOCUMENT_SUFFIXES = {".pdf", ".docx", ".xlsx"}
+MANIFEST_LIMIT = 200
 # A document inside an archive is materialised once to reuse the normal parser;
 # the cap bounds that temporary copy, the archive-wide 512 MiB limit still holds.
 NESTED_DOCUMENT_LIMIT = 64 * 1024 * 1024
@@ -135,6 +162,8 @@ def zip_sections(filename):
     with zipfile.ZipFile(filename) as archive:
         members = archive.infolist()
         check_archive_limits(len(members), sum(member.file_size for member in members))
+        entries = []
+        start = EMITTED
         for member in members:
             if member.is_dir() or member.flag_bits & 0x1:
                 continue
@@ -142,6 +171,7 @@ def zip_sections(filename):
                 continue
             if not safe_member(member.filename) or archive_kind(member.filename):
                 continue
+            entries.append((member.filename, member.file_size))
             try:
                 with archive.open(member) as source:
                     if os.path.splitext(member.filename)[1].lower() in DOCUMENT_SUFFIXES:
@@ -150,15 +180,20 @@ def zip_sections(filename):
                         emit_member(member.filename, source)
             except Exception:
                 continue
+        if EMITTED == start:
+            emit_manifest(entries)
 
 
 def tar_sections(filename):
     with tarfile.open(filename, "r:*") as archive:
         members = archive.getmembers()
         check_archive_limits(len(members), sum(member.size for member in members))
+        entries = []
+        start = EMITTED
         for member in members:
             if not member.isfile() or not safe_member(member.name) or archive_kind(member.name):
                 continue
+            entries.append((member.name, member.size))
             try:
                 source = archive.extractfile(member)
                 if source is None:
@@ -170,6 +205,8 @@ def tar_sections(filename):
                         emit_member(member.name, source)
             except Exception:
                 continue
+        if EMITTED == start:
+            emit_manifest(entries)
 
 
 def gzip_inner_name(filename, fallback):
@@ -247,15 +284,17 @@ def sevenzip_sections(filename):
         # such a name would widen the extraction beyond the vetted set.
         if not safe_member(member) or archive_kind(member) or member.startswith("@") or any(char in "*?[]" for char in member):
             continue
-        files.append(member)
+        files.append((member, declared_size(entry)))
+    start = EMITTED
     directory = tempfile.mkdtemp(prefix="omp-archive-")
     try:
         # Only vetted member names are extracted, so 7z never sees a path that
         # could land outside the temporary directory.
-        for offset in range(0, len(files), 100):
-            subprocess.run([tool, "x", "-y", "-bso0", "-bsp0", f"-o{directory}", filename] + files[offset:offset + 100], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+        names = [name for name, _ in files]
+        for offset in range(0, len(names), 100):
+            subprocess.run([tool, "x", "-y", "-bso0", "-bsp0", f"-o{directory}", filename] + names[offset:offset + 100], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
         root = os.path.realpath(directory)
-        for member in files:
+        for member, _size in files:
             target = os.path.realpath(os.path.join(root, member))
             if not target.startswith(root + os.sep):
                 continue
@@ -269,6 +308,8 @@ def sevenzip_sections(filename):
                         emit_member(member, source)
             except OSError:
                 continue
+        if EMITTED == start:
+            emit_manifest(files)
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
