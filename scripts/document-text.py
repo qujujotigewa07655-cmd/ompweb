@@ -78,17 +78,23 @@ def sections(filename, display_name=None):
             finally:
                 workbook.close()
     else:
-        with open(filename, encoding="utf-8-sig", errors="strict") as source:
-            number = 1
-            while True:
-                text = source.readline(16384)
-                if not text:
-                    break
-                if any(ord(char) < 32 and char not in "\t\r\n\f" for char in text):
-                    raise ValueError("Binary data is not a text document")
-                emit(f"Line {number}", text.rstrip("\r\n"))
-                if text.endswith("\n"):
-                    number += 1
+        # A binary file (an archive, an executable) is not a text document, and
+        # must say so instead of failing the decode half-way and printing a
+        # codec traceback to the caller.
+        try:
+            with open(filename, encoding="utf-8-sig", errors="strict") as source:
+                number = 1
+                while True:
+                    text = source.readline(16384)
+                    if not text:
+                        break
+                    if any(ord(char) < 32 and char not in "\t\r\n\f" for char in text):
+                        raise ValueError("Binary data is not a text document")
+                    emit(f"Line {number}", text.rstrip("\r\n"))
+                    if text.endswith("\n"):
+                        number += 1
+        except UnicodeDecodeError:
+            raise ValueError("Binary data is not a text document")
 
 
 def image_derivative(original, output):

@@ -46,6 +46,10 @@ async function imageDerivative(original: string, output: string, signal: AbortSi
   try { await promise; signal.throwIfAborted(); } finally { signal.removeEventListener("abort", stop); }
 }
 
+/** The extractor's own wording for "this file is not text"; see scripts/document-text.py. */
+const BINARY_DOCUMENT_ERROR = "Binary data is not a text document";
+const isBinaryDocument = (error: unknown): boolean => error instanceof Error && error.message.trim() === BINARY_DOCUMENT_ERROR;
+
 /** Small manifest + bounded raw chunks; originals never enter a JSON/base64 body. */
 export async function handleAttachmentUpload(request: Request, presetDirectory?: string): Promise<Response> {
   let activeId: string | undefined;
@@ -149,8 +153,19 @@ export async function handleAttachmentUpload(request: Request, presetDirectory?:
         } else {
           const extracted = path.join(derived, "extracted-sections.txt");
           const handle = await fs.open(extracted, "wx", 0o600);
-          try { for await (const section of readDocumentSections(original, signal)) await handle.writeFile(`${section.location}\n${section.text}\n\n`); } finally { await handle.close(); }
-          attachment.textPath = extracted;
+          let hasText = true;
+          try {
+            for await (const section of readDocumentSections(original, signal)) await handle.writeFile(`${section.location}\n${section.text}\n\n`);
+          } catch (error) {
+            // An archive or another binary is attached as its original: the agent
+            // reads the file itself instead of a text extraction.
+            if (!isBinaryDocument(error)) throw error;
+            hasText = false;
+          } finally {
+            await handle.close();
+          }
+          if (hasText) attachment.textPath = extracted;
+          else await fs.rm(extracted, { force: true });
         }
         attachments.push(attachment);
       }
