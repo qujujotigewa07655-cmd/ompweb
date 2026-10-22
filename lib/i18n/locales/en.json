@@ -1773,5 +1773,7 @@
   "chatInput.attachmentProjectRequired": "Select a project working directory before attaching files.",
   "chatInput.attachmentUploading": "Uploading and preparing attachments…",
   "chatInput.attachmentUploadFailed": "The attachment upload failed.",
-  "fileExplorer.uploadTooManyFiles": "Select at most {count} files. No files were accepted."
+  "fileExplorer.uploadTooManyFiles": "Select at most {count} files. No files were accepted.",
+  "chatWindow.exactMatch": "Exact message match",
+  "chatWindow.backToConversation": "Return to conversation"
 }
