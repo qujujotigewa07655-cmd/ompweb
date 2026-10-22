@@ -408,11 +408,13 @@ language data. DOCX is parsed as XML, XLSX is read without evaluating formulas
 or following external links, and neither format executes macros. Office
 containers expanding beyond 512 MiB fail with an explicit safety error.
 
-Archives are read in place, without writing extracted members to disk: zip,
-jar, war, whl and apk, tar (plain or gz/bz2/xz), single-file gz/bz2/xz streams,
-and 7z/rar through the `7z` command-line tool. Text members at the first level
-become extracted sections; binary and nested-archive members are skipped, and
-an archive with no text is attached as its original. Archives that expand
+Archives are read without unpacking the tree to disk: zip, jar, war, whl and
+apk, tar (plain or gz/bz2/xz), single-file gz/bz2/xz streams, and 7z/rar
+through the `7z` command-line tool. Text members at the first level become
+extracted sections; a PDF, DOCX or XLSX member is copied to a bounded
+temporary file, parsed by its normal extractor under the member path and
+removed again. Binary and nested-archive members are skipped, and an archive
+with no readable text is attached as its original. Archives that expand
 beyond 512 MiB or hold more than 20,000 entries fail with an explicit safety
 error.
 ## Environment Variables

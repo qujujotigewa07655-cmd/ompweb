@@ -16,17 +16,55 @@ import re
 import xml.etree.ElementTree as ET
 
 
+SECTION_PREFIX = ""
+
+
 def emit(location, text):
     # A pathological page/paragraph/row must not create an unbounded IPC frame.
+    where = f"{SECTION_PREFIX} · {location}" if SECTION_PREFIX else location
     for offset in range(0, len(text), 16384):
         chunk = text[offset:offset + 16384]
         if chunk.strip():
-            print(json.dumps({"location": location, "text": chunk}, ensure_ascii=True), flush=True)
+            print(json.dumps({"location": where, "text": chunk}, ensure_ascii=True), flush=True)
 
 
 TEXT_MEMBER_LIMIT = 8 * 1024 * 1024
 ARCHIVE_EXPANDED_LIMIT = 512 * 1024 * 1024
 ARCHIVE_ENTRY_LIMIT = 20000
+DOCUMENT_SUFFIXES = {".pdf", ".docx", ".xlsx"}
+# A document inside an archive is materialised once to reuse the normal parser;
+# the cap bounds that temporary copy, the archive-wide 512 MiB limit still holds.
+NESTED_DOCUMENT_LIMIT = 64 * 1024 * 1024
+
+
+def nested_document(source, member):
+    """Parse a document stored inside an archive and prefix its sections with
+    the member path. A member that cannot be parsed is skipped: one broken file
+    must not reject the whole archive."""
+    global SECTION_PREFIX
+    suffix = os.path.splitext(member)[1].lower()
+    handle, temporary = tempfile.mkstemp(prefix="omp-member-", suffix=suffix)
+    try:
+        written = 0
+        with os.fdopen(handle, "wb") as target:
+            while True:
+                chunk = source.read(65536)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > NESTED_DOCUMENT_LIMIT:
+                    return
+                target.write(chunk)
+        SECTION_PREFIX = member
+        try:
+            sections(temporary, member)
+        except Exception:
+            return
+        finally:
+            SECTION_PREFIX = ""
+    finally:
+        os.unlink(temporary)
+
 
 STREAM_OPENERS = {"gz": gzip.open, "bz2": bz2.open, "xz": lzma.open}
 
@@ -106,7 +144,10 @@ def zip_sections(filename):
                 continue
             try:
                 with archive.open(member) as source:
-                    emit_member(member.filename, source)
+                    if os.path.splitext(member.filename)[1].lower() in DOCUMENT_SUFFIXES:
+                        nested_document(source, member.filename)
+                    else:
+                        emit_member(member.filename, source)
             except Exception:
                 continue
 
@@ -123,7 +164,10 @@ def tar_sections(filename):
                 if source is None:
                     continue
                 with source:
-                    emit_member(member.name, source)
+                    if os.path.splitext(member.name)[1].lower() in DOCUMENT_SUFFIXES:
+                        nested_document(source, member.name)
+                    else:
+                        emit_member(member.name, source)
             except Exception:
                 continue
 
@@ -219,7 +263,10 @@ def sevenzip_sections(filename):
                 if not stat.S_ISREG(os.stat(target, follow_symlinks=False).st_mode):
                     continue
                 with os.fdopen(os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), "rb") as source:
-                    emit_member(member, source)
+                    if os.path.splitext(member)[1].lower() in DOCUMENT_SUFFIXES:
+                        nested_document(source, member)
+                    else:
+                        emit_member(member, source)
             except OSError:
                 continue
     finally:
