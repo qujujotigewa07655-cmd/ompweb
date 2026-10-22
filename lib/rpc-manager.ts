@@ -1092,7 +1092,11 @@ export class AgentSessionWrapper {
         break;
     }
     event.web = { streamId: this.streamId, sequence: ++this.streamSequence };
-    for (const l of this.listeners) {
+    // Iterate over a copy: a listener may unsubscribe itself while handling
+    // the frame (a stalled SSE stream closing itself), and splicing the live
+    // array mid-iteration would skip the NEXT listener — another tab would
+    // silently miss the terminal frame.
+    for (const l of [...this.listeners]) {
       try {
         l(event as AgentEvent);
       } catch {
@@ -1320,7 +1324,10 @@ export class AgentSessionWrapper {
       this.clearLiveSnapshots();
     }
 
-    if (wasRunning && !this.isRunning()) {
+    if (wasRunning !== this.isRunning()) {
+      // Both directions: a state read can DISCOVER a run (a tab attaching to a
+      // session that is already running), and that session has to reach the
+      // sidebar — no frame type is involved in that transition.
       notifyRunningChange();
     }
     const skillDiagnostics = parseSkillDiagnosticsSnapshot(state.skillDiagnostics);
