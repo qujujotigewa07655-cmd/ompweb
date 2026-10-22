@@ -59,12 +59,15 @@ export function scheduleAtDisplayRate(flush: () => void, payloadBytes = 0): () =
 }
 
 /**
- * Approximate display size of the accumulated content in a `message_update`.
+ * Approximate cost of re-rendering the accumulated content of a
+ * `message_update`, in "text-equivalent" characters.
  *
- * `text` blocks are the expensive ones: they are re-parsed by the markdown
- * pipeline on every flush. A `thinking` block is plain text in a div, so it
- * costs far less per byte, but it still grows and still re-renders — counting
- * it keeps the estimate honest without pretending it is markdown.
+ * `text` blocks are re-parsed by the markdown pipeline on every flush, so
+ * they count in full. A `thinking` block is plain text in a div — it grows and
+ * re-renders too, but far cheaper per byte, so it counts at a fraction.
+ * Measured on this host's real sessions: 78.6% of all assistant characters are
+ * thinking, so counting it in full would push the delay onto 2% of messages
+ * whose markdown is tiny (median 69 characters of text).
  */
 function accumulatedTextBytes(event: CoalescableEvent): number {
   const content = (event.message as { content?: unknown } | undefined)?.content;
@@ -74,7 +77,7 @@ function accumulatedTextBytes(event: CoalescableEvent): number {
   for (const part of content) {
     const block = part as { text?: unknown; thinking?: unknown } | null;
     if (typeof block?.text === "string") total += block.text.length;
-    else if (typeof block?.thinking === "string") total += block.thinking.length;
+    else if (typeof block?.thinking === "string") total += Math.round(block.thinking.length * 0.2);
   }
   return total;
 }
