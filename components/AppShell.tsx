@@ -718,11 +718,19 @@ export function AppShell({ appName }: { appName: string }) {
   const [autoNameStatus, setAutoNameStatus] = useState<AutoNameStatus>({ kind: "idle" });
   const autoNameTimerRef = useRef<TimerHandle | undefined>(undefined);
   const activeSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
+  // The project of the selected session, kept in a ref so the callbacks that
+  // read it keep a stable identity: a session rename rewrites the session
+  // object, and a dependency on that object re-created the callbacks and
+  // defeated the sidebar's memo.
+  const selectedSessionProjectRef = useRef<string | null>(null);
+  const selectedSessionCwdRef = useRef<string | null>(null);
   const archiveRetryTimerRef = useRef<TimerHandle | undefined>(undefined);
   useEffect(() => () => clearTimeout(archiveRetryTimerRef.current), []);
   useLayoutEffect(() => {
     activeSessionIdRef.current = selectedSession?.id ?? null;
-  }, [selectedSession?.id]);
+    selectedSessionProjectRef.current = selectedSession?.projectRoot ?? selectedSession?.cwd ?? null;
+    selectedSessionCwdRef.current = selectedSession?.cwd ?? null;
+  }, [selectedSession?.id, selectedSession?.projectRoot, selectedSession?.cwd]);
   const handleSessionStatsChange = useCallback((stats: SessionStatsInfo | null) => {
     setSessionStats(stats);
   }, []);
@@ -1177,7 +1185,7 @@ export function AppShell({ appName }: { appName: string }) {
     // casing (Windows/NTFS) between the session's projectRoot and the
     // sidebar's resolved project root.
     const newProject = projectRoot ?? cwd;
-    const sessionProject = selectedSession ? (selectedSession.projectRoot ?? selectedSession.cwd) : null;
+    const sessionProject = selectedSessionProjectRef.current;
     if (sessionProject && comparableProjectPath(sessionProject) === comparableProjectPath(newProject)) {
       return;
     }
@@ -1195,7 +1203,7 @@ export function AppShell({ appName }: { appName: string }) {
     setSystemPromptLoading(false);
     setActiveTopPanel(null);
     router.replace("/", { scroll: false });
-  }, [router, selectedSession]);
+  }, [router]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false) => {
     // Re-picking the already-open session (sidebar double-click, palette
@@ -1468,8 +1476,8 @@ export function AppShell({ appName }: { appName: string }) {
     // otherwise keep the exit guard armed for unreachable content.
     clearDraft(sessionId);
     setRefreshKey((k) => k + 1);
-    if (selectedSession?.id === sessionId) {
-      const cwd = selectedSession.cwd;
+    if (activeSessionIdRef.current === sessionId) {
+      const cwd = selectedSessionCwdRef.current;
       setSelectedSession(null);
       setNewSessionCwd(cwd ?? null);
       setSessionKey((k) => k + 1);
@@ -1479,7 +1487,7 @@ export function AppShell({ appName }: { appName: string }) {
       setActiveTopPanel(null);
       router.replace("/", { scroll: false });
     }
-  }, [selectedSession, router]);
+  }, [router]);
   const handleInitialRestoreDone = useCallback(() => {
     setInitialSessionRestored(true);
   }, []);

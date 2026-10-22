@@ -2819,6 +2819,31 @@ test("the usage-limit badge appears mid-run and clears when the run ends without
   assert.equal(w.latest.usageLimit, undefined);
 });
 
+test("the indicator polls ask for the light state, so the prompt never rides along", async () => {
+  resetWorld();
+  primeSession("s1", [userMsg("u0", "q")]);
+  const { w, es } = await startStreamingRun("s1");
+  world.agents.set("s1", { running: true, state: { isStreaming: true, tokensPerSecond: 12, usageLimit: SLOW_STATE } });
+  // The in-run gauge sample ticks every 2s.
+  for (let waited = 0; w.latest.tokensPerSecond !== 12 && waited < 5000; waited += 250) await settle(250);
+  assert.equal(w.latest.tokensPerSecond, 12, "the gauge reads the light state");
+
+  // The request itself must carry ?light=1: the server-side projection is
+  // useless if the client keeps asking for the full snapshot. Only the polls
+  // made DURING the run are the indicator polls — the one on connect is a
+  // full snapshot (it reads the queue and the skill diagnostics).
+  const agentCalls = world.calls.filter((call) => call.method === "GET" && /\/api\/agent\/s1(\?|$)/.test(call.url));
+  assert.ok(agentCalls.length > 0, "the gauge must call the agent state endpoint");
+  const gaugeCalls = agentCalls.filter((call) => call.url.includes("light=1"));
+  assert.ok(gaugeCalls.length > 0, `an indicator poll must ask for the light state, saw: ${agentCalls.map((call) => call.url).join(", ")}`);
+  const fullCalls = agentCalls.filter((call) => !call.url.includes("light=1"));
+  assert.ok(
+    fullCalls.length <= 1,
+    `only the connect-time snapshot may ask for the full state, saw: ${fullCalls.map((call) => call.url).join(", ")}`,
+  );
+  await act(async () => { es.emit({ type: "agent_end", isTerminal: true }); });
+});
+
 test("the Slow toggle follows omp's per-model state and is cleared by a switch to an unsupported model", async () => {
   resetWorld();
   primeSession("s1", [userMsg("u0", "q")]);

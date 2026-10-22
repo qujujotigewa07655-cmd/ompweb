@@ -58,15 +58,23 @@ export function scheduleAtDisplayRate(flush: () => void, payloadBytes = 0): () =
   return () => clearTimeout(id);
 }
 
-/** Approximate display size of the accumulated text in a `message_update`. */
+/**
+ * Approximate display size of the accumulated content in a `message_update`.
+ *
+ * `text` blocks are the expensive ones: they are re-parsed by the markdown
+ * pipeline on every flush. A `thinking` block is plain text in a div, so it
+ * costs far less per byte, but it still grows and still re-renders — counting
+ * it keeps the estimate honest without pretending it is markdown.
+ */
 function accumulatedTextBytes(event: CoalescableEvent): number {
   const content = (event.message as { content?: unknown } | undefined)?.content;
   if (typeof content === "string") return content.length;
   if (!Array.isArray(content)) return 0;
   let total = 0;
   for (const part of content) {
-    const text = (part as { text?: unknown } | null)?.text;
-    if (typeof text === "string") total += text.length;
+    const block = part as { text?: unknown; thinking?: unknown } | null;
+    if (typeof block?.text === "string") total += block.text.length;
+    else if (typeof block?.thinking === "string") total += block.thinking.length;
   }
   return total;
 }
