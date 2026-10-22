@@ -1672,7 +1672,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     ) {
       if (runId !== undefined && promptRunIdRef.current !== runId) return;
       try {
-        const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
+        const res = await fetch(`/api/agent/${encodeURIComponent(sid)}?light=1`);
         if (res.ok) {
           const data = await res.json() as { running?: boolean; state?: AgentStateResponse };
           const state = data.state;
@@ -1699,7 +1699,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     ) {
       await delay(BASH_STATE_RECONCILE_MS);
       try {
-        const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
+        const res = await fetch(`/api/agent/${encodeURIComponent(sid)}?light=1`);
         if (!res.ok) continue;
         const data = await res.json() as { state?: AgentStateResponse };
         if (data.state?.isBashRunning) continue;
@@ -1861,7 +1861,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const sid = sessionIdRef.current;
       if (!sid) return;
       let cancelled = false;
-      void fetch(`/api/agent/${encodeURIComponent(sid)}`)
+      void fetch(`/api/agent/${encodeURIComponent(sid)}?light=1`)
         .then((res) => (res.ok ? res.json() : null))
         .then((data: { state?: AgentStateResponse } | null) => {
           if (cancelled) return;
@@ -1877,7 +1877,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const id = setInterval(() => {
       const sid = sessionIdRef.current;
       if (!sid) return;
-      void fetch(`/api/agent/${encodeURIComponent(sid)}`)
+      // Indicator poll: `light` drops the system prompt from every response.
+      void fetch(`/api/agent/${encodeURIComponent(sid)}?light=1`)
         .then((res) => (res.ok ? res.json() : null))
         .then((data: { state?: AgentStateResponse } | null) => {
           // A sample in flight when the run ends must not overwrite the end-of-run state.

@@ -2,6 +2,11 @@ import { getRpcSession } from "@/lib/rpc-manager";
 
 export const dynamic = "force-dynamic";
 
+// Frames a stuck consumer may accumulate before the stream is closed. Snapshot
+// frames collapse, so this only counts deltas (tool starts/ends, notices,
+// dialogs) — enough headroom for a long tool run, far below unbounded growth.
+const MAX_BLOCKED_FRAMES = 500;
+
 // GET /api/agent/[id]/events - SSE stream of agent events
 export async function GET(
   req: Request,
@@ -29,19 +34,39 @@ export async function GET(
       let closed = false;
       let cleaned = false;
       let unsubscribe: (() => void) | null = null;
-      // Backpressure slot: while the consumer is behind (desiredSize < 0),
-      // replaceable `message_update` frames collapse to the latest one (omp
-      // sends the FULL accumulated message each time, so latest-wins is safe).
-      // Control/terminal frames are small and never dropped; they flush the
-      // pending update first so ordering is preserved.
-      let pendingUpdate: unknown | null = null;
+      // Backpressure slots: while the consumer is behind (desiredSize < 0),
+      // frames that carry a FULL snapshot collapse to the newest one in their
+      // slot — `message_update` (omp resends the whole accumulated message) and
+      // `tool_execution_update` keyed by toolCallId (whole accumulated partial
+      // result). Everything else is a delta, a terminal frame or a dialog, so
+      // it is never replaced; it flushes the slots first to keep the order.
+      const pendingUpdates = new Map<string, unknown>();
+      // A consumer that never drains would otherwise grow the queue with
+      // delta frames forever. Above this many frames queued while blocked, the
+      // stream is closed: the client reconnects and resyncs from a snapshot,
+      // which is the same recovery path a dropped connection takes.
+      let queuedWhileBlocked = 0;
       let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+      const blocked = () => controller.desiredSize !== null && controller.desiredSize < 0;
+
+      /** The coalescing slot for a full-snapshot frame, or null for any other. */
+      const snapshotSlot = (data: unknown): string | null => {
+        const event = data as { type?: string; toolCallId?: unknown } | null;
+        if (event?.type === "message_update") return "message";
+        if (event?.type === "tool_execution_update") {
+          // A frame without an id cannot be keyed: two tools would overwrite
+          // each other's slot, so it is dispatched straight away.
+          return typeof event.toolCallId === "string" ? `tool:${event.toolCallId}` : null;
+        }
+        return null;
+      };
 
       const cleanup = () => {
         if (cleaned) return;
         closed = true;
         cleaned = true;
-        pendingUpdate = null;
+        pendingUpdates.clear();
         if (heartbeatTimer !== null) {
           clearInterval(heartbeatTimer);
           heartbeatTimer = null;
@@ -60,32 +85,44 @@ export async function GET(
       streamCleanup = cleanup;
       streamFlush = () => {
         if (closed) return;
-        flushPendingUpdate();
+        flushPendingUpdates();
+        queuedWhileBlocked = 0;
       };
 
-      const flushPendingUpdate = (): boolean => {
-        const data = pendingUpdate;
-        pendingUpdate = null;
-        if (data === null) return true;
+      const flushPendingUpdates = (): boolean => {
+        if (pendingUpdates.size === 0) return true;
+        const queued = [...pendingUpdates.values()];
+        pendingUpdates.clear();
         if (closed) return false;
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-          return true;
-        } catch {
-          cleanup();
-          return false;
+        for (const data of queued) {
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+          } catch {
+            cleanup();
+            return false;
+          }
         }
+        return true;
       };
 
       const encode = (data: unknown) => {
         if (closed) return;
-        const type = (data as { type?: string } | null)?.type;
-        // Coalesce while backpressured; never buffer unboundedly.
-        if (type === "message_update" && controller.desiredSize !== null && controller.desiredSize < 0) {
-          pendingUpdate = data;
+        const slot = blocked() ? snapshotSlot(data) : null;
+        if (slot !== null) {
+          // Re-inserting keeps the newest payload in the slot's original order.
+          pendingUpdates.set(slot, data);
           return;
         }
-        if (!flushPendingUpdate()) return;
+        if (!flushPendingUpdates()) return;
+        if (blocked()) {
+          queuedWhileBlocked += 1;
+          if (queuedWhileBlocked >= MAX_BLOCKED_FRAMES) {
+            cleanup();
+            return;
+          }
+        } else {
+          queuedWhileBlocked = 0;
+        }
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
         } catch {
@@ -96,7 +133,7 @@ export async function GET(
       // Heartbeat every 30s to prevent server/proxy timeout (Next.js default ~120-150s)
       heartbeatTimer = setInterval(() => {
         if (closed) return;
-        if (!flushPendingUpdate()) return;
+        if (!flushPendingUpdates()) return;
         try {
           controller.enqueue(encoder.encode(":\n\n"));
         } catch {

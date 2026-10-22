@@ -14,6 +14,8 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ### Fixes
 
+- Stop paying for work the chat never reads: the two-second indicator poll and the shell watchdog ask for `?light=1` instead of a full state snapshot (the system prompt was riding along with every one), token frames no longer rebuild and re-serialize the running-session list, concurrent searches share their index walk instead of queueing one per request, and the streaming markdown flush backs off to 60/120 ms once the answer passes 8/24 KB (measured: 23.6 ms per re-parse at 4 KB, 84 ms at 30 KB).
+- Bound the event stream of a stalled tab: full-snapshot frames (`message_update`, and each tool's `tool_execution_update` keyed by tool call) collapse to their latest while the consumer is behind, and a stream that accumulates 500 unread delta frames is closed so the client reconnects and resyncs instead of growing the queue without limit.
 - Preserve Unicode literal search matches, reject linked project roots, remove stale binary/deleted-source index entries, and display initial indexing progress from the actual status phase.
 - Share composer attachment slots across images, documents and pending reads; upload text beyond the inline budget and large images; keep uploaded-image paths through draft reload, refused sends and queue recovery, and hydrate bounded derivatives before dispatch.
 - Cancel composer attachment work on clear, session switch and unmount; use chunked explorer uploads with existing conflict choices; localize search-close and image-generation placeholders.

@@ -260,6 +260,15 @@ wait for that commit:
   `lib/message-update-coalescer.ts` (chatty commands emit ~10-100+ frames/s).
   `message_end` drops the pending `message_update` (the committed message
   supersedes it) but must NOT drop buffered tool updates.
+- Neither the client coalescer nor the SSE route may unboundedly buffer deltas
+  for a stalled consumer. `GET /api/agent/[id]/events` collapses full-snapshot
+  frames while `desiredSize < 0` (`message_update`, and `tool_execution_update`
+  keyed by `toolCallId`, since omp resends the whole accumulated result) and
+  closes the stream after `MAX_BLOCKED_FRAMES` queued deltas, which the client
+  recovers from by reconnecting like any dropped connection.
+- The streaming markdown flush is size-aware: re-parsing the whole accumulated
+  answer costs 23.6 ms at 4 KB and 84 ms at 30 KB (measured), so
+  `scheduleAtDisplayRate` drops to 60/120 ms once the text passes 8/24 KB.
 - Live entries are cleared on `agent_start`, terminal `agent_end`, prompt
   send/settlement failure — a tool must never leak into the next run.
 

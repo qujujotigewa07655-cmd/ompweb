@@ -19,8 +19,9 @@
 
 export type CoalescableEvent = { type: string; [key: string]: unknown };
 
-/** Schedules `flush` and returns a cancel function. */
-export type FlushScheduler = (flush: () => void) => () => void;
+/** Schedules `flush` and returns a cancel function. `payloadBytes` is the size
+ * of the accumulated text the flush would render, when the caller knows it. */
+export type FlushScheduler = (flush: () => void, payloadBytes?: number) => () => void;
 
 export interface MessageUpdateCoalescer {
   push(event: CoalescableEvent): void;
@@ -33,17 +34,41 @@ export interface MessageUpdateCoalescer {
 // requestAnimationFrame matches display rate but stalls in hidden tabs, so
 // fall back to a trailing 50ms timer there (and outside the browser). Shared
 // with other display-rate batching (hooks/useBtw.ts).
-export function scheduleAtDisplayRate(flush: () => void): () => void {
+//
+// Each flush re-parses the WHOLE accumulated answer. Measured on this
+// component (MarkdownBody: normalizeDisplayMath + remark-gfm + rehype-raw +
+// rehype-sanitize): 23.6 ms at 4 KB, 47.5 ms at 12 KB, 84.2 ms at 30 KB — every
+// one of those exceeds the 16.7 ms frame budget, so a per-frame flush stalls
+// the main thread for the entire generation. The interval therefore follows
+// the payload: display-rate for short replies, a coarser cadence once the
+// accumulated text is expensive. Nobody reads 60 updates/s of a 30 KB answer,
+// and the final text still arrives complete via `message_end`.
+export function scheduleAtDisplayRate(flush: () => void, payloadBytes = 0): () => void {
+  const delay = payloadBytes >= 24_000 ? 120 : payloadBytes >= 8_000 ? 60 : 0;
   if (
-    typeof document !== "undefined"
+    delay === 0
+    && typeof document !== "undefined"
     && !document.hidden
     && typeof requestAnimationFrame === "function"
   ) {
     const id = requestAnimationFrame(flush);
     return () => cancelAnimationFrame(id);
   }
-  const id = setTimeout(flush, 50);
+  const id = setTimeout(flush, delay || 50);
   return () => clearTimeout(id);
+}
+
+/** Approximate display size of the accumulated text in a `message_update`. */
+function accumulatedTextBytes(event: CoalescableEvent): number {
+  const content = (event.message as { content?: unknown } | undefined)?.content;
+  if (typeof content === "string") return content.length;
+  if (!Array.isArray(content)) return 0;
+  let total = 0;
+  for (const part of content) {
+    const text = (part as { text?: unknown } | null)?.text;
+    if (typeof text === "string") total += text.length;
+  }
+  return total;
 }
 
 export function createMessageUpdateCoalescer(
@@ -74,7 +99,7 @@ export function createMessageUpdateCoalescer(
   };
 
   const scheduleFlush = () => {
-    if (!cancelScheduled) cancelScheduled = schedule(flush);
+    if (!cancelScheduled) cancelScheduled = schedule(flush, pending ? accumulatedTextBytes(pending) : 0);
   };
 
   return {

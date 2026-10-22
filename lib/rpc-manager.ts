@@ -91,6 +91,14 @@ const GENERATE_TITLE_TIMEOUT_MS = 60_000;
 const RENAME_POLL_INTERVAL_MS = 500;
 const RENAME_POLL_TIMEOUT_MS = 20_000;
 const NON_TERMINAL_CONTINUATION_GRACE_MS = 2_000;
+// Frames that can change `isRunning()` (prompt/stream/compaction flags). Every
+// other frame leaves the running-session list identical; broadcasting on those
+// rebuilt and re-serialized that list once per token. Shell commands flip
+// `bashRunning` outside the frame path and notify explicitly.
+const RUNNING_STATE_EVENTS = new Set([
+  "agent_start", "agent_end", "prompt_result", "prompt_error",
+  "auto_compaction_start", "auto_compaction_end",
+]);
 const AWAITING_AGENT_START_TIMEOUT_MS = 10_000;
 const RESTARTING_MESSAGE = "This session is restarting — retry in a moment.";
 const BASH_EXCLUDE_MESSAGE =
@@ -884,7 +892,12 @@ export class AgentSessionWrapper {
 
     this.publishNotifications(event);
     this.emit(event);
-    notifyRunningChange({ refreshSessionList });
+    // Only these frames can change what `isRunning()` reports. Token updates,
+    // tool output and notices leave the running list identical, so rebuilding,
+    // sorting and serializing it on every one of them is pure waste.
+    if (refreshSessionList || RUNNING_STATE_EVENTS.has(event.type)) {
+      notifyRunningChange({ refreshSessionList });
+    }
   }
 
   /** Forget a pending dialog and its expiry timer. */

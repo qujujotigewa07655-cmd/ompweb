@@ -99,12 +99,27 @@ export async function POST(
   }
 }
 
-// GET /api/agent/[id] - Get current agent state
+// The fields the per-second indicator polls read (token gauge, shell watchdog).
+// A full state snapshot carries the joined system prompt, which those polls ask
+// for every two seconds and never use.
+const INDICATOR_FIELDS = [
+  "isStreaming", "isPromptRunning", "isBashRunning", "isCompacting", "tokensPerSecond", "usageLimit",
+] as const;
+
+function indicatorState(state: unknown): Record<string, unknown> {
+  const source = (state ?? {}) as Record<string, unknown>;
+  const picked: Record<string, unknown> = {};
+  for (const field of INDICATOR_FIELDS) if (source[field] !== undefined) picked[field] = source[field];
+  return picked;
+}
+
+// GET /api/agent/[id] - Get current agent state (?light=1: indicator fields only)
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const light = new URL(req.url).searchParams.get("light") === "1";
 
   try {
     const session = getRpcSession(id);
@@ -113,7 +128,7 @@ export async function GET(
     }
     try {
       const state = await session.send({ type: "get_state" });
-      return NextResponse.json({ running: true, state });
+      return NextResponse.json({ running: true, state: light ? indicatorState(state) : state });
     } catch (error) {
       if (error instanceof WebRpcError && error.code === "session_unresponsive") {
         return NextResponse.json({ running: false, recovered: true });

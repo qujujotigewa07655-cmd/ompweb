@@ -57,6 +57,10 @@ declare global {
   var __ompSearchIndexPath: string | undefined;
   var __ompSearchIndexState: IndexStatus | undefined;
   var __ompSearchIndexPass: Promise<SyncResult> | undefined;
+  /** The search-driven pass concurrent searches join; distinct from the background one. */
+  var __ompSearchIndexQueued: Promise<SyncResult> | undefined;
+  /** Bumped when a search-driven pass starts, so a late caller knows whether it was covered. */
+  var __ompSearchIndexGeneration: number | undefined;
   var __ompSearchIndexWrite: Promise<unknown> | undefined;
   var __ompSearchIndexWarm: boolean | undefined;
   var __ompSearchIndexProjectsAt: number | undefined;
@@ -380,6 +384,10 @@ function database(): DatabaseSync {
   globalThis.__ompSearchIndex?.close();
   globalThis.__ompSearchIndex = undefined;
   globalThis.__ompSearchIndexPass = undefined;
+  // A pass still walking the previous database must not be joined by a caller
+  // that expects the new one.
+  globalThis.__ompSearchIndexQueued = undefined;
+  globalThis.__ompSearchIndexGeneration = undefined;
   globalThis.__ompSearchIndexWarm = undefined;
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(file);
@@ -662,7 +670,30 @@ async function fullPass(): Promise<SyncResult> {
  *
  * Every source is checked so a file written a moment ago is found by the next
  * search. Unchanged files reuse their stored sections.
+ *
+ * Concurrent searches share one walk instead of each starting their own. A
+ * caller can only join a pass that *started after it arrived* — an older pass
+ * may already have statted its file before the write. So a burst arriving
+ * during a pass waits for it and then shares one follow-up pass, rather than
+ * queueing one walk per search.
  */
 export async function ensureSearchIndex(): Promise<SyncResult> {
-  return fullPass();
+  const arrivedAt = globalThis.__ompSearchIndexGeneration ?? 0;
+  for (;;) {
+    const running = globalThis.__ompSearchIndexQueued;
+    if (running) {
+      // This pass began after we arrived, so its walk saw our changes.
+      if ((globalThis.__ompSearchIndexGeneration ?? 0) > arrivedAt) return running;
+      await running.catch(() => {});
+      continue;
+    }
+    globalThis.__ompSearchIndexGeneration = (globalThis.__ompSearchIndexGeneration ?? 0) + 1;
+    const pass = fullPass();
+    globalThis.__ompSearchIndexQueued = pass;
+    const settle = () => {
+      if (globalThis.__ompSearchIndexQueued === pass) globalThis.__ompSearchIndexQueued = undefined;
+    };
+    pass.then(settle, settle);
+    return pass;
+  }
 }

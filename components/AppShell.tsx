@@ -10,7 +10,6 @@ import { useNavigationHistory } from "@/hooks/useNavigationHistory";
 import { isMacPlatform, navigateShortcutHint, NAVIGATION_HISTORY_MAX_ENTRIES } from "@/lib/navigation-history";
 import { useMobileSidebarGestures } from "@/hooks/useMobileSidebarGestures";
 import { SessionSidebar } from "./SessionSidebar";
-import { ImageGenerationDialog } from "./ImageGenerationDialog";
 import type { WorktreeContext } from "./SessionSidebar-helpers";
 import { ToastProvider } from "./ui/toast";
 import { toast } from "./ui/toast";
@@ -84,12 +83,21 @@ import {
   type AppUpdatePhase,
   type AppUpdateStage,
 } from "./AppUpdateDialog";
-import { ArchiveBrowser } from "./ArchiveBrowser";
 import { publishSessionsChanged } from "@/lib/session-change-bus";
 // The settings shell is part of the app bundle so opening it does not fetch or compile a modal chunk. The right panel (viewer included) is a separate chunk, preloaded on the first pointerdown or keydown and mounted on first open.
 // No loading placeholder: it would take the panel's place in the layout (on
 // phones, squeezing out the chat) for a frame even when the code is cached.
 const RightPanel = dynamic(() => import("./RightPanel").then((m) => m.RightPanel), {
+  ssr: false,
+  loading: () => null,
+});
+// Both render only after a click; importing them statically put their code in
+// the first-load chunk of a page nobody can use them from yet.
+const ImageGenerationDialog = dynamic(() => import("./ImageGenerationDialog").then((m) => m.ImageGenerationDialog), {
+  ssr: false,
+  loading: () => null,
+});
+const ArchiveBrowser = dynamic(() => import("./ArchiveBrowser").then((m) => m.ArchiveBrowser), {
   ssr: false,
   loading: () => null,
 });
@@ -1786,6 +1794,14 @@ export function AppShell({ appName }: { appName: string }) {
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const windowTitle = activeCwdName ? `${activeCwdName} - ${appName}` : appName;
 
+  // Inline arrows here re-created these props on every AppShell render, which
+  // defeated SessionSidebar's memo: the 1487-line tree re-rendered on every
+  // unread-count, usage or update-stage change.
+  const handleToggleSettings = useCallback(() => {
+    setSettingsTab((prev) => (prev ? null : "general"));
+  }, []);
+  const handleOpenArchive = useCallback(() => setArchiveBrowserOpen(true), []);
+
   useEffect(() => {
     const syncWindowTitle = () => {
       if (document.title !== windowTitle) document.title = windowTitle;
@@ -1816,8 +1832,8 @@ export function AppShell({ appName }: { appName: string }) {
       setAddProjectOpen={setAddProjectOpen}
       usageVisible={providerUsageVisible}
       settingsOpen={Boolean(settingsTab)}
-      onOpenSettings={() => setSettingsTab((prev) => prev ? null : "general")}
-      onOpenArchive={() => setArchiveBrowserOpen(true)}
+      onOpenSettings={handleToggleSettings}
+      onOpenArchive={handleOpenArchive}
       onOpenFile={handleOpenLinkedFile}
       navigation={sidebarNavigation}
       updateAvailable={Boolean(appUpdate?.updateAvailable) || ompUpdateAvailable}
