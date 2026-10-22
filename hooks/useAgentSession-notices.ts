@@ -57,6 +57,15 @@ export function fillPendingNotices(visible: NoticeItem[], pending: NoticeItem[])
 export function noticeReducer(state: NoticeState, action: NoticeAction): NoticeState {
   switch (action.type) {
     case "add": {
+      // A repeated notice would only stack an identical row: identity is the
+      // text and severity, not the freshly generated id. A row that is already
+      // fading out does not block a new occurrence.
+      const duplicate = state.visible.some((notice) => (
+        !notice.exiting && notice.type === action.notice.type && notice.message === action.notice.message
+      )) || state.pending.some((notice) => (
+        notice.type === action.notice.type && notice.message === action.notice.message
+      ));
+      if (duplicate) return state;
       if (state.visible.some((notice) => notice.exiting) || state.visible.length >= MAX_NOTICES) {
         return {
           visible: state.visible.some((notice) => notice.exiting)

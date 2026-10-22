@@ -2160,7 +2160,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           ?? readAgentError(event.error)
           ?? "";
         if (/^xd:\/\/:\s*mounted\s+mcp__/i.test(message)) {
-          toast.info("MCP tools updated", message, { clamp: true });
+          toast.info("MCP tools updated", message, { clamp: true, id: "mcp-mount" });
         } else {
           const noticeType = level === "error" ? "error" : level === "warning" ? "warning" : "info";
           addNotice({
@@ -2180,7 +2180,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       case "command_output": {
         const text = (event.text as string | undefined)?.trim() ?? "";
-        if (/^xd:\/\/:\s*mounted\s+mcp__/i.test(text)) toast.info("MCP tools updated", text, { clamp: true });
+        if (/^xd:\/\/:\s*mounted\s+mcp__/i.test(text)) toast.info("MCP tools updated", text, { clamp: true, id: "mcp-mount" });
         else if (text) {
           addNotice({ type: "info", message: text });
           if (isQuotaLikeError(text)) {
@@ -2280,7 +2280,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (text && isQuotaLikeError(text)) lastQuotaErrorRef.current = text.slice(0, 800);
         }
         if (completed?.role === "custom" && (completed as CustomMessage).customType === "xdev-mount-notice") {
-          toast.info("MCP tools updated", describeMcpMountNotice(completed as CustomMessage), { clamp: true });
+          toast.info("MCP tools updated", describeMcpMountNotice(completed as CustomMessage), { clamp: true, id: "mcp-mount" });
         } else if (completed) {
           // The advisor model injects its review as a custom message mid-run;
           // surface it as live advisor activity for the composer thunder icon.

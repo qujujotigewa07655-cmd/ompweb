@@ -392,7 +392,7 @@ test("a prompt queued behind a running shell command drops the phantom turn and 
   assert.equal(queuedNotices().length, 1, "the user is told the message was queued");
   // A steer degrades exactly the same way instead of erroring.
   await act(async () => { await w.latest.handleSteer("steer instead"); });
-  assert.equal(queuedNotices().length, 2);
+  assert.equal(queuedNotices().length, 1, "an identical notice is not stacked a second time");
 });
 
 test("queued cancellation reports omp's answer and leaves the chip to the snapshot", async (t) => {
