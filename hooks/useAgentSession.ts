@@ -1908,6 +1908,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [agentRunning]);
 
 
+  // omp hands a queued message's images back as `{ type, data, mimeType }`
+  // only, so an uploaded image's workspace paths are kept by its derivative
+  // data and rejoined when Edit/Stop recovers the message. The cap bounds a
+  // long session; the oldest entry is dropped first.
+  const queuedImageMetaRef = useRef(new Map<string, Pick<ChatDraftImage, "path" | "visionPath" | "name" | "size">>());
+  const fromQueuedImages = useCallback((value: unknown): ChatDraftImage[] => toDraftImages(value)
+    .map((image) => ({ ...image, ...queuedImageMetaRef.current.get(image.data) })), []);
+
   /** Cancel one pending message in omp. The chip itself leaves through omp's
    *  queue snapshot; resolves to the removed message's images (empty when it
    *  had none or omp does not return them) only when omp confirms the
@@ -1926,7 +1934,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const result = await sendAgentCommand<{ removed: boolean; images?: unknown }>(sid, {
         type: "remove_queued_message", message: text, queue,
       });
-      if (result?.removed === true) return toDraftImages(result.images);
+      if (result?.removed === true) return fromQueuedImages(result.images);
       if (hookAliveRef.current && sessionIdRef.current === sid) {
         addNotice({ type: "warning", message: translate("agentSession.queuedRemovalUnavailable") });
       }
@@ -1939,7 +1947,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       if (queuedRemovalRef.current === removal) queuedRemovalRef.current = null;
     }
-  }, [addNotice]);
+  }, [addNotice, fromQueuedImages]);
 
   /** Move the first matching follow-up into omp's steering queue; the chip
    *  relabels through omp's queue snapshot. Never enqueue a copy via steer. */
@@ -2979,7 +2987,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         .filter((entry) => !(entry.text === "[Image]" && Array.isArray(entry.images) && entry.images.length > 0))
         .map((entry) => entry.text)
         .filter((text): text is string => typeof text === "string" && text.length > 0);
-      const images = entries.flatMap((entry) => toDraftImages(entry.images));
+      const images = entries.flatMap((entry) => fromQueuedImages(entry.images));
       if (texts.length > 0 || images.length > 0) recoverDraft(sid, { text: texts.join("\n\n"), images });
       // A failed attempt may have withdrawn messages whose texts were in the
       // lost response; say so unless the retry brought texts back.
@@ -3059,7 +3067,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (failed && hookAliveRef.current && sessionIdRef.current === sid) {
       addNotice({ type: "warning", message: translate("agentSession.queueDiscardFailed") });
     }
-  }, [addNotice]);
+  }, [addNotice, fromQueuedImages]);
 
   // Button, Esc, and the global shortcut can all fire while a withdrawal is
   // in flight: one Stop at a time, or two recoveries interleave their text.
@@ -3587,7 +3595,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // the real user message when pi delivers it (user message_end event). An
   // optimistic chat bubble here would duplicate the queue panel and turn into
   // a ghost message if the queue is recalled.
-  const toPiImages = (images?: AttachedImage[]) => images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
+  const toPiImages = (images?: AttachedImage[]) => images?.map((img) => {
+    if (img.path) {
+      const meta = queuedImageMetaRef.current;
+      if (meta.size >= 100) meta.delete(meta.keys().next().value!);
+      meta.set(img.data, { path: img.path, visionPath: img.visionPath, name: img.name, size: img.size });
+    }
+    return { type: "image" as const, data: img.data, mimeType: img.mimeType };
+  });
   const handleSteer = useCallback(async (message: string, images?: AttachedImage[]) => {
     const sid = sessionIdRef.current;
     if (!sid) return false;

@@ -36,15 +36,19 @@ export interface DraftRecovery {
   images?: ChatDraftImage[];
 }
 
-/** The `{ data, mimeType }` images in an omp RPC payload; anything else is dropped. */
+/** Restore RPC images and retain uploaded-image metadata when it is available. */
 export function toDraftImages(value: unknown): ChatDraftImage[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((image: unknown) => (
-    image && typeof image === "object" && "data" in image && "mimeType" in image
-      && typeof image.data === "string" && typeof image.mimeType === "string"
-      ? [{ data: image.data, mimeType: image.mimeType }]
-      : []
-  ));
+  return value.flatMap((image: unknown) => {
+    if (!image || typeof image !== "object" || !("data" in image) || !("mimeType" in image)
+      || typeof image.data !== "string" || typeof image.mimeType !== "string") return [];
+    const draft: ChatDraftImage = { data: image.data, mimeType: image.mimeType };
+    if ("path" in image && typeof image.path === "string") draft.path = image.path;
+    if ("visionPath" in image && typeof image.visionPath === "string") draft.visionPath = image.visionPath;
+    if ("name" in image && typeof image.name === "string") draft.name = image.name;
+    if ("size" in image && typeof image.size === "number" && Number.isSafeInteger(image.size) && image.size >= 0) draft.size = image.size;
+    return [draft];
+  });
 }
 
 export function mergeRecoveredText(current: string, { text, replace }: DraftRecovery): string {

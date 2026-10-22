@@ -31,3 +31,13 @@ test("switching projects cancels generation, enables the new project, and ignore
   assert.equal(screen.queryByText("Stale saved image"), null);
   assert.equal(screen.getByRole("button", { name: "Create", exact: true }).disabled, false);
 });
+
+test("loading and empty subscription-model options use the current locale", async () => {
+  const pending = Promise.withResolvers();
+  globalThis.fetch = () => pending.promise;
+  render(React.createElement(ImageGenerationDialog, { cwd: "/project", onClose() {}, onOpenFile() {} }));
+  assert.ok(screen.getByRole("option", { name: "Loading…" }));
+  assert.ok(screen.getByRole("option", { name: "No subscription models available" }));
+  await act(async () => { pending.resolve(Response.json({ providers: [], images: [] })); });
+  assert.ok(screen.getByRole("option", { name: "No subscription models available" }));
+});

@@ -18,11 +18,9 @@ import type { FullTextSearchResult } from "./full-text-search-types";
  * parses each file once, keeps its searchable sections in SQLite, and re-parses
  * a file only when its modification time or size changed.
  *
- * Two refresh rates, because the two source kinds cost very different amounts:
- * messages and archives are a few thousand files and are checked on every
- * search, so a just-finished message is findable immediately; project files are
- * hundreds of thousands, so they are refreshed in the background and a search
- * never waits for them.
+ * Searches check source sizes and modification times before reading stored
+ * text. A background pass also keeps the cache fresh between searches; only
+ * changed sources are parsed again.
  */
 
 const PRIVATE_DIRECTORIES: Record<string, true> = { ".git": true, ".ssh": true, ".gnupg": true, ".aws": true, ".azure": true, ".kube": true, ".omp": true, ".agents": true, ".agent": true, ".config": true, ".dsh": true, ".claude": true, ".codex": true };
@@ -40,7 +38,11 @@ const OVERLAP = 255;
 const PROJECT_REFRESH_MS = 30_000;
 /** How long the list of managed project roots is reused. */
 const ROOTS_TTL_MS = 60_000;
-const SCHEMA_VERSION = 5;
+// 6: a text file that became binary used to keep its sections while only its
+// size and time were refreshed, so an existing cache can still answer with the
+// old text. Dropping the tables rebuilds the cache instead of leaving rows that
+// no later pass revisits.
+const SCHEMA_VERSION = 6;
 
 export type Source = { kind: FullTextSearchResult["kind"]; source: string; filePath: string; title: string; session?: SessionInfo };
 export type Section = { text: string; location: string; entryId?: string; session?: SessionInfo; overlap?: number; lineBase?: number };
@@ -60,7 +62,6 @@ declare global {
   var __ompSearchIndexProjectsAt: number | undefined;
   var __ompSearchIndexTimer: ReturnType<typeof setInterval> | undefined;
   var __ompSearchIndexRoots: { roots: string[]; at: number } | undefined;
-  var __ompSearchIndexRootMtimes: Map<string, number> | undefined;
 }
 
 export function publicProjectPath(filePath: string): boolean {
@@ -89,8 +90,7 @@ export async function safePath(filePath: string, root: string): Promise<string> 
   return real;
 }
 
-type WalkedFile = { filePath: string; mtimeMs: number; size: number; /** Whether the containing directory changed since the last pass. */
-  changed?: boolean };
+type WalkedFile = { filePath: string; mtimeMs: number; size: number };
 
 /**
  * Walk a tree and report each regular file with its size and modification
@@ -134,23 +134,17 @@ async function* walkFiles(root: string, options: { project: boolean; signal?: Ab
 }
 
 /**
- * Project files, read directory by directory.
+ * Project files, read directory by directory. Every file's own size and
+ * modification time is checked because directory mtimes do not track edits.
  *
- * A directory's modification time changes when an entry inside it is added,
- * renamed or removed, but not when a file's contents change. The walk visits
- * every directory, and the files of a changed directory are read again;
- * the others are confirmed by the size and modification time stored in the
- * index. That keeps a refresh proportional to what actually changed instead
- * of to the number of files in every project.
- *
- * The listing is synchronous because one promise per directory and one per
- * file turned a two second walk into half a minute over 246 thousand files.
- * A directory that cannot be read is reported through the asynchronous API,
- * which is what the rest of the search uses for its error messages.
+ * Listings are synchronous because one promise per file made large walks much
+ * slower. Opening directories uses the asynchronous API for warning handling.
  */
 async function projectFiles(root: string, options: { signal?: AbortSignal; onWarning?: SourceWarning }): Promise<WalkedFile[]> {
   const files: WalkedFile[] = [];
-  const mtimes = globalThis.__ompSearchIndexRootMtimes ??= new Map<string, number>();
+  options.signal?.throwIfAborted();
+  try { await safePath(root, root); }
+  catch (error) { options.signal?.throwIfAborted(); options.onWarning?.(root, error); return files; }
   const stack: string[] = [root];
   while (stack.length) {
     options.signal?.throwIfAborted();
@@ -166,11 +160,6 @@ async function projectFiles(root: string, options: { signal?: AbortSignal; onWar
     let entries: Dirent[];
     try { entries = readdirSync(directory, { withFileTypes: true }); }
     catch (error) { options.onWarning?.(directory, error); continue; }
-    const stat = statSync(directory, { throwIfNoEntry: false });
-    const mtime = stat?.mtimeMs ?? 0;
-    const known = mtimes.get(directory);
-    mtimes.set(directory, mtime);
-    const changed = known === undefined || known !== mtime;
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
       const filePath = path.join(directory, entry.name);
@@ -180,12 +169,9 @@ async function projectFiles(root: string, options: { signal?: AbortSignal; onWar
         continue;
       }
       if (!entry.isFile() || privateFileName(entry.name) || !publicProjectPath(filePath)) continue;
-      // The files of an unchanged directory keep their indexed content, but
-      // one of them may have been rewritten, so its own size and time are
-      // still checked. Only the files of a changed directory are re-read.
       const fileStat = statSync(filePath, { throwIfNoEntry: false });
       if (!fileStat?.isFile()) continue;
-      files.push({ filePath, mtimeMs: fileStat.mtimeMs, size: fileStat.size, changed });
+      files.push({ filePath, mtimeMs: fileStat.mtimeMs, size: fileStat.size });
     }
   }
   return files;
@@ -398,11 +384,18 @@ function database(): DatabaseSync {
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;");
-  // SQLite's lower() folds ASCII only, so SQL cannot do a Unicode
-  // case-insensitive substring test. Registering one keeps the filter inside
-  // the scan instead of copying every section into JavaScript.
-  db.function("icontains", { deterministic: true }, (text, needle) =>
-    typeof text === "string" && typeof needle === "string" && text.toLowerCase().includes(needle) ? 1 : 0);
+  // Keep the literal /iu filter inside the scan, caching its regex once per
+  // needle instead of lowercasing and copying every stored section.
+  let containsNeedle: string | undefined;
+  let containsPattern: RegExp | undefined;
+  db.function("icontains", { deterministic: true }, (text, needle) => {
+    if (typeof text !== "string" || typeof needle !== "string") return 0;
+    if (!containsPattern || needle !== containsNeedle) {
+      containsPattern = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu");
+      containsNeedle = needle;
+    }
+    return containsPattern.test(text) ? 1 : 0;
+  });
   const version = Number((db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined)?.user_version ?? 0);
   if (version !== SCHEMA_VERSION) {
     db.exec("DROP TABLE IF EXISTS sections; DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS sections_fts; DROP TABLE IF EXISTS meta;");
@@ -532,7 +525,13 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
   // Trigram insertion one row at a time is far slower than a bulk select, so
   // rows are appended to the FTS table in batches after each commit instead.
   const indexPending = db.prepare("INSERT INTO sections_fts(rowid, text) SELECT id, text FROM sections WHERE fts_ok = 1 AND id > ? ORDER BY id");
-  const removeIndex = db.prepare("DELETE FROM sections_fts WHERE rowid = ?");
+  const removeIndex = db.prepare("DELETE FROM sections_fts WHERE rowid IN (SELECT id FROM sections WHERE path = ? AND fts_ok = 1)");
+  const removeSource = (filePath: string) => {
+    // FTS rowids must be removed while the corresponding sections still exist.
+    removeIndex.run(filePath);
+    removeSections.run(filePath);
+    removeFile.run(filePath);
+  };
   const readCursor = db.prepare("SELECT value FROM meta WHERE key = 'fts_cursor'");
   const writeCursor = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_cursor', ?)");
   const advanceIndex = () => {
@@ -556,16 +555,7 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
         if (prior.error) warn(title, new Error(prior.error));
         return;
       }
-      // A file in a directory that did not change can only have changed by
-      // being rewritten; the index already knows its size and time, so the
-      // re-read above is the only way to notice. Nothing to do here.
-      // The index rows go first: their text is the content table's, and a
-      // contentless index cannot look it up afterwards.
-      for (const { id } of db.prepare("SELECT id FROM sections WHERE path = ?").iterate(filePath) as Iterable<{ id: number }>) {
-        removeIndex.run(id);
-      }
-      removeSections.run(filePath);
-      removeFile.run(filePath);
+      removeSource(filePath);
       let section = 0;
       try {
         for await (const part of readSections({ kind, source, filePath, title })) {
@@ -579,7 +569,7 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
       } catch (error) {
         // Keep the failure on record so the next pass does not retry a file
         // that cannot be parsed, and report it as a partial-coverage warning.
-        removeSections.run(filePath);
+        removeSource(filePath);
         insertFile.run(filePath, source, kind, mtimeMs, size, error instanceof Error ? error.message : "Search failed");
         warn(title, error);
         return;
@@ -607,8 +597,7 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
           options.signal?.throwIfAborted();
           present.add(file.filePath);
           try {
-            // A file whose directory did not change keeps its indexed content
-            // unless its own size or time differs, which handle() compares.
+            // Unchanged files keep their parsed content and readability result.
             const prior = known.get(file.filePath);
             if (prior && prior.mtime === file.mtimeMs && prior.size === file.size) {
               // The file is unchanged, so its content — and whether it is
@@ -617,8 +606,8 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
               continue;
             }
             if (!(await readable(file.filePath))) {
-              // A binary file is skipped for good: reading its first bytes on
-              // every pass cost eight seconds over the history.
+              // Keep the binary classification until the file changes again.
+              removeSource(file.filePath);
               insertFile.run(file.filePath, `file:${file.filePath}`, "file", file.mtimeMs, file.size, null);
               continue;
             }
@@ -630,14 +619,11 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
         }
       }
     }
-    // A file that was not visited is only deleted when this pass covered the
-    // whole tree: the project walk skips the files of unchanged directories,
-    // so their absence says nothing about the file being gone.
+    // Both walks visit every eligible file, so absent sources are removed.
     if (options.projects) {
       for (const filePath of known.keys()) {
         if (present.has(filePath)) continue;
-        removeSections.run(filePath);
-        removeFile.run(filePath);
+        removeSource(filePath);
       }
     }
     db.exec("COMMIT");
@@ -674,24 +660,9 @@ async function fullPass(): Promise<SyncResult> {
 /**
  * Bring the index up to date for a search.
  *
- * Both source kinds are refreshed, so a file written a moment ago is found by
- * the next search. The project files are the expensive part, and the walk
- * above only re-reads the directories that changed, so an untouched tree
- * costs about a second.
+ * Every source is checked so a file written a moment ago is found by the next
+ * search. Unchanged files reuse their stored sections.
  */
 export async function ensureSearchIndex(): Promise<SyncResult> {
-  const current = state();
-  if (!globalThis.__ompSearchIndexWarm) {
-    // A cold search waits for the whole index: without it the results would
-    // silently miss every project file.
-    const result = await fullPass();
-    globalThis.__ompSearchIndexWarm = true;
-    current.version++;
-    return result;
-  }
-  const result = await syncSources({ messages: true, projects: true });
-  globalThis.__ompSearchIndexProjectsAt = Date.now();
-  current.projectsAt = globalThis.__ompSearchIndexProjectsAt;
-  current.version++;
-  return result;
+  return fullPass();
 }

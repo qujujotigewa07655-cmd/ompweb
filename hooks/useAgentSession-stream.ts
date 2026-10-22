@@ -454,6 +454,12 @@ export interface AttachedImage {
   data: string;
   mimeType: string;
   previewUrl: string;
+  /** Uploaded image: the workspace original, kept across drafts and queues. */
+  path?: string;
+  /** The bounded derivative sent as image data. */
+  visionPath?: string;
+  name?: string;
+  size?: number;
 }
 
 export type SelectedModel = { provider: string; modelId: string };

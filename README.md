@@ -321,7 +321,7 @@ host (KDE Plasma, and most Wayland/X11 desktops).
 - **Message Copy**: Copy user messages and completed assistant replies as rendered plain text or original Markdown using the buttons below each message. Thinking, tool output, and message controls are excluded. Oversized messages that use the raw-text viewer copy their full source in either format.
 - **Queue Deletion Confirmation**: Preview and confirm before cancelling queued follow-ups or steered messages in OMP. Requires native `remove_queued_message` support; already-delivered messages cannot be recalled.
 - **Session Management**: Browse past conversations by project, fork sessions, branch within a session, archive/restore, import session files, and deep-link via URL.
-- **Draft Recovery**: Unsent text stays scoped to its conversation or new-session workspace and is restored after Back/Forward navigation or reload in the same tab when browser storage is available (up to 50 drafts). Images and file attachments remain in memory only.
+- **Draft Recovery**: Unsent text stays scoped to its conversation or new-session workspace and is restored after Back/Forward navigation or reload in the same tab when browser storage is available (up to 50 drafts). Uploaded attachment paths survive reload; inline images and text files remain in memory only.
 - **Live Plans & Subagents**: Collapsible panels pinned above the composer track live todo phases and running subagents (status, tool, retries, tokens/cost, nested tasks) with transcript dialogs and history recovery.
 - **Tool Preset Picker**: Choose the toolset for new sessions in the composer — `none` / `default` (`read,bash,edit,write`) / `full` (all tools including subagents). Persists to localStorage.
 - **File Explorer & Previews**: Browse workspaces side-by-side with chat; preview code, markdown, Mermaid, images, audio, PDFs, and diffs with allow-listed access.
@@ -356,15 +356,19 @@ builds that index and shows file progress in the dialog; later searches only
 process changed files. The index is a cache — deleting it is safe and it
 rebuilds on the next search. Indexing retains one complete JSONL entry at a
 time, so memory is proportional to the largest entry, not the full transcript.
+Removed sources and files that become binary lose both their cached sections
+and their FTS entries. Symbolic links are excluded even when the managed
+project root itself is a link.
 
 Plain text and code files are read in-process, chunked at 16 KiB with a 255
 character overlap so a match across a chunk border is still found; only PDF,
 DOCX and XLSX go through the document extractor. The searchable text is stored
-once and indexed by a trigram FTS5 table, so a needle of three or more
-characters is answered from the index and shorter ones fall back to a scan.
-Queries are answered in well under a second on a history of 1.3 GB, and the
-first index build takes a few minutes; both measured against a real history on
-the development machine.
+once and indexed by a trigram FTS5 table. Only non-NUL ASCII trigrams from the
+original query are used as a conservative prefilter; matches are verified with
+the same Unicode case-insensitive literal regex. Queries without a safe
+trigram scan the stored text instead, so Greek case variants and astral
+characters are not lost to tokenizer or UTF-16 differences. Refresh time
+depends on the number of managed files as well as changed content.
 
 ## Image generation
 
@@ -377,13 +381,24 @@ files are written into the active project and can be opened or downloaded from
 the dialog.
 ## Attachments
 
-The composer and the file explorer accept at most 10 originals per batch, with
-a 50 MiB (52,428,800-byte) per-file limit. A text file that fits the inline
-budget is inlined into the prompt as before; a document or an oversized file is
-uploaded to the workspace, its text is extracted on the server, and the prompt
-carries the path so the agent reads the extracted sections itself. Original
-attachments and their extracted text are written under the workspace's
-`.omp-attachments-*` directory.
+The composer accepts at most 10 originals per message, with images, documents
+and pending reads sharing those slots. The file explorer accepts at most 10
+originals per batch. Both use a 50 MiB (52,428,800-byte) per-file limit.
+A text file that fits the remaining 4 MiB inline budget is inlined into the
+prompt; otherwise it is uploaded rather than dropped. Documents and images
+that exceed the inline image budget are uploaded to the workspace.
+Uploaded originals and extracted sections are kept under `.omp-attachments-*`;
+the prompt references those paths instead of embedding document contents.
+
+Uploaded images retain both the original path and a bounded JPEG vision
+derivative. Previews and restored drafts use the derivative; send and queue
+hydrate it before validating the existing 5 MiB aggregate image and 8 MiB
+request budgets. A send the session refuses keeps its text and attachments in
+the composer, and failed hydration keeps the draft. A queued message comes back
+from omp with its images' workspace paths, so Edit and Stop restore an
+attachment that still survives a reload. Clearing or switching the composer
+cancels its pending reads and uploads, so results cannot land in a different
+conversation. The explorer retains its replace/skip conflict choices.
 
 Files travel in 1 MiB chunks with server-side byte/offset checks and abort
 cleanup. Invalid batches are rejected without partial selection. Document

@@ -14,24 +14,20 @@ export function validateSearchQuery(query: string): string {
 }
 
 /**
- * Build an FTS5 prefilter from the needle's trigrams. The trigram tokenizer
- * needs three characters, so shorter needles are answered by a scan.
+ * Build an FTS5 prefilter from non-NUL ASCII trigrams of the original needle.
+ * Unicode lowercasing and UTF-16 slices do not preserve /iu equivalence, so
+ * other trigrams are omitted and a needle without safe trigrams uses a scan.
  *
- * Every trigram of the needle is required.
- *
- * A match may span two chunks, but each chunk repeats the last 255
- * characters of the previous one, so a match of up to 255 characters is
- * repeated whole in the chunk that follows it. The full AND is therefore both
- * correct and far more selective than a single trigram: a needle of 20
- * characters matches 65 sections instead of 102 thousand.
+ * Every accepted trigram is required. Chunks repeat the previous 255 UTF-16
+ * code units, so a validated needle also fits whole in the following chunk.
  */
 function trigramQuery(needle: string): string | null {
-  const lower = needle.toLowerCase();
-  if (lower.length < 3) return null;
   const grams: string[] = [];
-  for (let index = 0; index + 3 <= lower.length; index++) {
-    const gram = lower.slice(index, index + 3);
-    if (!grams.includes(gram)) grams.push(gram);
+  for (let index = 0; index + 3 <= needle.length; index++) {
+    const gram = needle.slice(index, index + 3);
+    if (gram.includes("\0") || /[^\p{ASCII}]/u.test(gram)) continue;
+    const lower = gram.toLowerCase();
+    if (!grams.includes(lower)) grams.push(lower);
   }
   if (!grams.length) return null;
   return grams.map((gram) => `"${gram.replace(/"/g, '""')}"`).join(" AND ");
@@ -58,16 +54,11 @@ export async function searchFullText(query: string, options: { cursor?: number; 
   options.signal?.throwIfAborted();
   const page: FullTextSearchPage = { results: [], nextCursor: null, warnings: [...sync.warnings], warningCount: sync.warningCount };
   let matched = 0;
-  // A trigram index cannot answer needles shorter than its token size, so those
-  // scan every stored section. Even so it is one pass over parsed text instead
-  // of re-parsing the transcripts, which was the actual cost.
+  // Needles without safe ASCII trigrams scan parsed text, not source files.
   const columns = "id, path, src, kind, sec, loc, entry_id, title, session, file_path, overlap, line_base, text";
-  const lower = needle.toLowerCase();
-  // The trigram table is queried as an AND of the needle's trigrams, which the
-  // detail=none index answers without storing positions. Oversized sections
-  // are deliberately outside that table, so they are always scanned. Candidate
-  // rows are verified by the JavaScript regex below, which — unlike SQLite's
-  // ASCII-only lower() — folds every script.
+  // detail=none answers an AND of trigrams without storing positions.
+  // Oversized sections are outside FTS and always scanned with the same /iu
+  // literal semantics used to verify candidates below.
   const trigrams = trigramQuery(needle);
   // Only the ids are read first: a common needle can match 58 thousand
   // sections, and loading all of their text costs seconds. The text of a
@@ -76,8 +67,8 @@ export async function searchFullText(query: string, options: { cursor?: number; 
     ? searchDatabase().prepare(`SELECT id FROM sections WHERE fts_ok = 0 AND icontains(text, ?)
         UNION ALL
         SELECT id FROM sections WHERE id IN (SELECT rowid FROM sections_fts WHERE sections_fts MATCH ?)
-        ORDER BY id`).iterate(lower, trigrams)
-    : searchDatabase().prepare(`SELECT id FROM sections WHERE icontains(text, ?) ORDER BY id`).iterate(lower);
+        ORDER BY id`).iterate(needle, trigrams)
+    : searchDatabase().prepare(`SELECT id FROM sections WHERE icontains(text, ?) ORDER BY id`).iterate(needle);
   const load = searchDatabase().prepare(`SELECT ${columns} FROM sections WHERE id = ?`);
   for (const { id } of ids as Iterable<{ id: number }>) {
     const row = load.get(id) as StoredSection | undefined;

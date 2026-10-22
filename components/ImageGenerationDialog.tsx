@@ -94,11 +94,11 @@ export function ImageGenerationDialog({ cwd, onClose, onOpenFile }: {
             const next = providers.find((option) => option.id === event.target.value);
             if (next) { setProvider(next.id); setModel(next.model); setError(null); }
           }}>
-            {providers.length ? providers.map((option) => <option key={option.id} value={option.id}>{option.name}{option.available ? "" : ` — ${t("imageGeneration.signInRequired")}`}</option>) : <option>Загрузка…</option>}
+            {providers.length ? providers.map((option) => <option key={option.id} value={option.id}>{option.name}{option.available ? "" : ` — ${t("imageGeneration.signInRequired")}`}</option>) : <option>{t("imageGeneration.loading")}</option>}
           </select>
           <label htmlFor="image-model">{provider === "openai" ? t("imageGeneration.gptModel") : t("imageGeneration.geminiModel")}</label>
           <select id="image-model" value={model} required disabled={busy || loading || !selected?.available} onChange={(event) => setModel(event.target.value)}>
-            {selected?.models.length ? selected.models.map((choice) => <option key={choice.id} value={choice.id}>{choice.name}</option>) : <option value="">Нет доступных моделей подписки</option>}
+            {selected?.models.length ? selected.models.map((choice) => <option key={choice.id} value={choice.id}>{choice.name}</option>) : <option value="">{t("imageGeneration.noModels")}</option>}
           </select>
           <label htmlFor="image-prompt">{t("imageGeneration.prompt")}</label>
           <textarea id="image-prompt" value={prompt} required maxLength={32000} rows={4} disabled={busy} onChange={(event) => setPrompt(event.target.value)} aria-describedby="image-api-cost" style={{ resize: "vertical", minWidth: 0 }} />

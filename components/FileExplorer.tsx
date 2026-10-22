@@ -30,6 +30,7 @@ import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/
 import { MAX_RESULT_LIMIT, type FileIndexEntry } from "@/lib/file-fuzzy";
 import { buildSearchRows } from "@/lib/search-results";
 import { MAX_UPLOAD_FILES } from "@/lib/file-upload-limits";
+import { uploadFileBatch, type ChunkUploadResult } from "@/lib/file-upload-client";
 
 interface FileEntry {
   name: string;
@@ -80,14 +81,6 @@ interface UploadError {
   error: string;
 }
 
-interface UploadResponse {
-  uploaded?: string[];
-  skipped?: string[];
-  errors?: UploadError[];
-  conflicts?: string[];
-  nonReplaceable?: string[];
-  error?: string;
-}
 
 interface UploadSummary {
   uploaded: string[];
@@ -150,40 +143,6 @@ export const GIT_STATUS_COLORS: Record<GitFileStatusKind, string> = {
   conflict: "var(--status-error)",
 };
 
-function uploadFiles(
-  targetDirectory: string,
-  files: File[],
-  strategy: UploadConflictStrategy,
-  onProgress: (progress: number) => void,
-): Promise<{ status: number; data: UploadResponse }> {
-  return new Promise((resolve, reject) => {
-    const formData = new FormData();
-    files.forEach((file) => formData.append("files", file, file.name));
-
-    const xhr = new XMLHttpRequest();
-    xhr.open(
-      "POST",
-      `/api/files/${encodeFilePathForApi(targetDirectory)}?type=upload&conflict=${strategy}`,
-    );
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.round((event.loaded / event.total) * 100));
-      }
-    };
-    xhr.onerror = () => reject(new Error(translate("fileExplorer.uploadNetworkError")));
-    xhr.onabort = () => reject(new Error(translate("fileExplorer.uploadCancelled")));
-    xhr.onload = () => {
-      let data: UploadResponse = {};
-      try {
-        data = JSON.parse(xhr.responseText) as UploadResponse;
-      } catch {
-        if (xhr.responseText) data.error = xhr.responseText;
-      }
-      resolve({ status: xhr.status, data });
-    };
-    xhr.send(formData);
-  });
-}
 
 function DismissButton({ onClick, title }: { onClick: () => void; title: string }) {
   return (
@@ -859,7 +818,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setFocusedIndex((prev) => Math.min(prev, Math.max(0, rowsRef.current.length - 1)));
   }, [rows.length]);
 
-  const applyUploadResult = useCallback((data: UploadResponse) => {
+  const applyUploadResult = useCallback((data: ChunkUploadResult) => {
     const uploaded = data.uploaded ?? [];
     const skipped = data.skipped ?? [];
     const errors = data.errors ?? [];
@@ -890,7 +849,12 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     }
 
     try {
-      const { status, data } = await uploadFiles(cwd, files, strategy, setUploadProgress);
+      const { status, data } = await uploadFileBatch(files, {
+        directory: cwd,
+        attachments: false,
+        strategy,
+        onProgress: setUploadProgress,
+      });
       if (status === 409 && data.conflicts?.length) {
         setPendingConflict({
           files,
@@ -929,7 +893,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
           body: JSON.stringify({ fileNames: files.map((file) => file.name) }),
         },
       );
-      const data = await res.json().catch(() => ({})) as UploadResponse;
+      const data = await res.json().catch(() => ({})) as ChunkUploadResult;
       if (!res.ok) throw new Error(data.error ?? translate("fileExplorer.uploadCheckFailed", { status: res.status }));
 
       if (data.conflicts?.length) {

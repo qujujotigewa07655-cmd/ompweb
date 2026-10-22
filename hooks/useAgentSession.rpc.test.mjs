@@ -3290,6 +3290,33 @@ test("Stop takes queued input back through omp in one step, including a steer th
   clearDraft("abort-atomic");
 });
 
+// omp hands queued images back as `{ type, data, mimeType }` only. An uploaded
+// image must still return with the workspace paths the composer attached, or
+// Edit/Stop restores a picture that no longer survives a reload.
+test("a recovered queued image keeps the workspace paths it was sent with", async () => {
+  const { getDraft, clearDraft } = await jiti.import("@/lib/draft-store");
+  resetWorld();
+  clearDraft("queue-image-meta");
+  primeSession("queue-image-meta", [userMsg("u0", "loaded question")]);
+  const { w } = await startRun("queue-image-meta", "hello agent");
+  const image = {
+    data: "ZGVyaXZhdGl2ZQ==", mimeType: "image/jpeg", previewUrl: "data:image/jpeg;base64,ZGVyaXZhdGl2ZQ==",
+    path: "/workspace/original.png", visionPath: "/workspace/vision.jpg", name: "original.png", size: 6 * 1024 * 1024,
+  };
+  await act(async () => { await w.latest.handleFollowUp("look", [image]); });
+  world.abortRestoreQueue = {
+    steering: [],
+    followUp: [{ text: "look", images: [{ type: "image", data: image.data, mimeType: image.mimeType }] }],
+  };
+
+  await act(async () => { await w.latest.handleAbort(); });
+
+  assert.deepEqual(getDraft("queue-image-meta")?.images, [{
+    data: image.data, mimeType: image.mimeType, path: image.path, visionPath: image.visionPath, name: image.name, size: image.size,
+  }]);
+  clearDraft("queue-image-meta");
+});
+
 const isAtomicStop = (method, _url, body) => method === "POST" && body?.type === "abort_and_restore_queue";
 
 test("a failed atomic Stop is retried once and restores what omp still held", async () => {

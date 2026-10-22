@@ -2,19 +2,20 @@ import "../tests/setup-dom.mjs";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react/pure.js";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react/pure.js";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, { fsCache: false, jsx: { runtime: "automatic" }, tsconfigPaths: true });
 const { FullTextSearch } = await jiti.import("./FullTextSearch.tsx");
 const { getSearchMessageTarget, clearSearchMessageTarget } = await jiti.import("../lib/full-text-search-navigation.ts");
+const { setLocale } = await jiti.import("../lib/i18n/index.tsx");
 const originalFetch = globalThis.fetch;
-afterEach(() => { cleanup(); globalThis.fetch = originalFetch; clearSearchMessageTarget("active"); });
+afterEach(() => { cleanup(); globalThis.fetch = originalFetch; clearSearchMessageTarget("active"); setLocale("en"); });
 const session = { id: "active", path: "/managed/session.jsonl", cwd: "/managed", created: "", modified: "", messageCount: 4, firstMessage: "unrelated" };
 const result = { kind: "message", source: "message:workspace/session.jsonl", title: "Example", location: "Message 4 · toolResult · exact-entry", snippet: "a needle in output", matchStart: 2, matchEnd: 8, section: 3, offset: 90000, entryId: "exact-entry", session };
 
-function submit() {
-  fireEvent.change(screen.getByRole("searchbox"), { target: { value: "needle" } });
+function submit(query = "needle") {
+  fireEvent.change(screen.getByRole("searchbox"), { target: { value: query } });
   fireEvent.click(screen.getByRole("button", { name: "Search", exact: true }));
 }
 
@@ -94,4 +95,67 @@ test("server search failures stay visible instead of appearing as no matches", a
   submit();
   assert.match((await screen.findByRole("alert")).textContent, /Managed source unreadable/);
   assert.match(screen.getByRole("status").textContent, /results are incomplete/);
+});
+
+test("Unicode matches keep their original query and highlight the actual folded text", async () => {
+  globalThis.fetch = async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body), { query: "οσ", cursor: 0 });
+    return new Response(JSON.stringify({ results: [{ ...result, snippet: "before ΟΣ after", matchStart: 7, matchEnd: 9 }], nextCursor: null, warningCount: 0, warnings: [] }));
+  };
+  render(React.createElement(FullTextSearch, { onClose: () => {}, onSelectSession: () => {} }));
+  submit("οσ");
+  const match = await screen.findByRole("button", { name: /Open exact match 1/ });
+  assert.equal(match.querySelector("mark")?.textContent, "ΟΣ");
+  fireEvent.click(match);
+  assert.equal(getSearchMessageTarget("active").query, "οσ");
+});
+
+test("index progress follows building, refreshing and idle phases without overwriting completed results", async () => {
+  const originalInterval = globalThis.setInterval;
+  const originalClear = globalThis.clearInterval;
+  let poll;
+  let finishSearch;
+  let finishStatus;
+  let status = { phase: "building", done: 7 };
+  try {
+    globalThis.setInterval = (callback) => { poll = callback; return 1; };
+    globalThis.clearInterval = () => {};
+    globalThis.fetch = (url) => {
+      if (url === "/api/search") return new Promise((resolve) => { finishSearch = resolve; });
+      assert.equal(url, "/api/search/status");
+      return Promise.resolve({ json: () => new Promise((resolve) => { finishStatus = () => resolve(status); }) });
+    };
+    render(React.createElement(FullTextSearch, { onClose: () => {}, onSelectSession: () => {} }));
+    submit();
+    const searching = screen.getByRole("status").textContent;
+    for (const next of [{ phase: "building", done: 7 }, { phase: "refreshing", done: 12 }, { phase: "idle", done: 12 }]) {
+      status = next;
+      await act(async () => { poll(); });
+      await act(async () => { finishStatus(); });
+      const message = screen.getByRole("status").textContent;
+      if (status.phase === "building") assert.match(message, new RegExp(`${status.done} files processed`));
+      else assert.equal(message, searching);
+    }
+    await act(async () => { poll(); });
+    await act(async () => { finishSearch(new Response(JSON.stringify({ results: [result], nextCursor: null, warningCount: 0, warnings: [] }))); });
+    const completed = screen.getByRole("status").textContent;
+    assert.match(completed, /Matches 1–1/);
+    status = { phase: "building", done: 99 };
+    await act(async () => { finishStatus(); });
+    assert.equal(screen.getByRole("status").textContent, completed, "a late poll cannot replace the final search status");
+  } finally {
+    cleanup();
+    globalThis.setInterval = originalInterval;
+    globalThis.clearInterval = originalClear;
+  }
+});
+
+test("the visible close label follows the selected language", () => {
+  setLocale("ja");
+  let closed = false;
+  render(React.createElement(FullTextSearch, { onClose: () => { closed = true; }, onSelectSession: () => {} }));
+  const close = screen.getByRole("button", { name: "全文検索を閉じる" });
+  assert.equal(close.textContent, "全文検索を閉じる");
+  fireEvent.click(close);
+  assert.equal(closed, true);
 });

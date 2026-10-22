@@ -6,6 +6,7 @@ import { useModalDialog } from "@/hooks/useModalDialog";
 import { useI18n } from "@/lib/i18n";
 import type { SessionInfo } from "@/lib/types";
 import type { FullTextSearchPage, FullTextSearchResult } from "@/lib/full-text-search-types";
+import type { IndexStatus } from "@/lib/full-text-search";
 import { navigateToSearchMessage } from "@/lib/full-text-search-navigation";
 import { FullTextSearchPreview, SearchHighlight } from "./FullTextSearchPreview";
 
@@ -27,14 +28,17 @@ export function FullTextSearch({ onClose, onSelectSession, onOpenFile }: {
   const request = useRef<AbortController | null>(null);
   useEffect(() => () => request.current?.abort(), []);
 
-  // The first search builds the transcript index; show its progress instead of
-  // a frozen "Searching…" while a large history is parsed.
+  // Show initial index progress without leaving it stale during later searches.
   useEffect(() => {
     if (!busy) return;
     let active = true;
     const timer = setInterval(() => {
-      void fetch("/api/search/status", { cache: "no-store" }).then((response) => response.json()).then((data: { running?: boolean; done?: number }) => {
-        if (active && data.running) setStatus(t("fullTextSearch.indexing", { count: data.done ?? 0 }));
+      const controller = request.current;
+      void fetch("/api/search/status", { cache: "no-store", signal: controller?.signal }).then((response) => response.json()).then((data: Pick<IndexStatus, "phase" | "done">) => {
+        if (!active || controller?.signal.aborted || controller !== request.current) return;
+        setStatus(data.phase === "building"
+          ? t("fullTextSearch.indexing", { count: data.done })
+          : t("fullTextSearch.searching"));
       }).catch(() => {});
     }, 1000);
     return () => { active = false; clearInterval(timer); };
@@ -73,7 +77,7 @@ export function FullTextSearch({ onClose, onSelectSession, onOpenFile }: {
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="full-text-search-title" tabIndex={-1} style={{ width: 900, maxWidth: "100%", maxHeight: "90dvh", overflow: "auto", padding: 20, borderRadius: 12, background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <h2 id="full-text-search-title" style={{ fontSize: 18, margin: "0 0 12px" }}>{t("fullTextSearch.title")}</h2>
-          <button type="button" aria-label={t("fullTextSearch.close")} onClick={onClose}>Close</button>
+          <button type="button" aria-label={t("fullTextSearch.close")} onClick={onClose}>{t("fullTextSearch.close")}</button>
         </div>
         <p style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("fullTextSearch.description")}</p>
         <form onSubmit={(event) => { event.preventDefault(); void search(query); }} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
