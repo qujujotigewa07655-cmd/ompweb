@@ -68,8 +68,8 @@ declare global {
   var __ompSearchIndexRoots: { roots: string[]; at: number } | undefined;
 }
 
-export function publicProjectPath(filePath: string): boolean {
-  return !isUnderConfigRoot(filePath, getConfigAgentRoots())
+export function publicProjectPath(filePath: string, configRoots: readonly string[] = getConfigAgentRoots()): boolean {
+  return !isUnderConfigRoot(filePath, configRoots)
     && !isConfigRootDeniedFile(filePath)
     && !filePath.split(path.sep).some((part) => PRIVATE_DIRECTORIES[part] === true || PRIVATE_NAMES.test(part));
 }
@@ -101,7 +101,7 @@ type WalkedFile = { filePath: string; mtimeMs: number; size: number };
  * time. The walk never follows symbolic links, so a file's path is always
  * inside the root that produced it.
  */
-async function* walkFiles(root: string, options: { project: boolean; signal?: AbortSignal; onWarning?: SourceWarning }): AsyncGenerator<WalkedFile> {
+async function* walkFiles(root: string, options: { project: boolean; signal?: AbortSignal; onWarning?: SourceWarning; configRoots?: readonly string[] }): AsyncGenerator<WalkedFile> {
   const { signal, onWarning } = options;
   signal?.throwIfAborted();
   let directory;
@@ -118,12 +118,12 @@ async function* walkFiles(root: string, options: { project: boolean; signal?: Ab
       const filePath = path.join(root, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
-        if (options.project && (IGNORED_NAMES[entry.name] === true || !publicProjectPath(filePath))) continue;
+        if (options.project && (IGNORED_NAMES[entry.name] === true || !publicProjectPath(filePath, options.configRoots))) continue;
         yield* walkFiles(filePath, options);
         continue;
       }
       if (!entry.isFile()) continue;
-      if (options.project && !publicProjectPath(filePath)) continue;
+      if (options.project && !publicProjectPath(filePath, options.configRoots)) continue;
       const stat = await fs.lstat(filePath);
       if (!stat.isFile()) continue;
       yield { filePath, mtimeMs: stat.mtimeMs, size: stat.size };
@@ -146,6 +146,9 @@ async function* walkFiles(root: string, options: { project: boolean; signal?: Ab
  */
 async function projectFiles(root: string, options: { signal?: AbortSignal; onWarning?: SourceWarning }): Promise<WalkedFile[]> {
   const files: WalkedFile[] = [];
+  // Resolving the config roots is not free and it does not change during a
+  // walk: doing it per file cost ~1.4 s over 82k paths.
+  const configRoots = getConfigAgentRoots();
   options.signal?.throwIfAborted();
   try { await safePath(root, root); }
   catch (error) { options.signal?.throwIfAborted(); options.onWarning?.(root, error); return files; }
@@ -168,11 +171,11 @@ async function projectFiles(root: string, options: { signal?: AbortSignal; onWar
       if (entry.isSymbolicLink()) continue;
       const filePath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
-        if (IGNORED_NAMES[entry.name] === true || !publicProjectPath(filePath)) continue;
+        if (IGNORED_NAMES[entry.name] === true || !publicProjectPath(filePath, configRoots)) continue;
         stack.push(filePath);
         continue;
       }
-      if (!entry.isFile() || privateFileName(entry.name) || !publicProjectPath(filePath)) continue;
+      if (!entry.isFile() || privateFileName(entry.name) || !publicProjectPath(filePath, configRoots)) continue;
       const fileStat = statSync(filePath, { throwIfNoEntry: false });
       if (!fileStat?.isFile()) continue;
       files.push({ filePath, mtimeMs: fileStat.mtimeMs, size: fileStat.size });

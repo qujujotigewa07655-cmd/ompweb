@@ -88,8 +88,43 @@ export function isConfigRootDeniedFile(filePath: string): boolean {
 
 /** True when `filePath` lives under one of the omp config/agent roots. */
 export function isUnderConfigRoot(filePath: string, configRoots: readonly string[]): boolean {
+  if (configRoots.length === 0) return false;
   const target = normalizeSlashes(filePath);
-  return configRoots.some((root) => isPathWithinRoots(target, new Set([normalizeSlashes(root)])));
+  // Resolving every root, and allocating a Set for it, on every one of the ~82k
+  // paths of a project walk cost ~1.4 s. The roots are prepared once per call
+  // site instead; the comparison itself is unchanged.
+  const prepared = preparedConfigRoots(configRoots);
+  const windowsTarget = isWindowsAbsolutePath(target);
+  const posixTarget = path.resolve(target);
+  for (const root of prepared) {
+    const useWindows = windowsTarget || root.windows;
+    const resolver = useWindows ? path.win32 : path;
+    const compared = useWindows ? resolver.resolve(target).toLowerCase() : posixTarget;
+    const boundary = useWindows ? root.win : root.posix;
+    if (compared === boundary.base || compared.startsWith(boundary.withSeparator)) return true;
+  }
+  return false;
+}
+
+type PreparedRoot = { windows: boolean; posix: { base: string; withSeparator: string }; win: { base: string; withSeparator: string } };
+
+const preparedRootCache = new WeakMap<readonly string[], PreparedRoot[]>();
+
+function preparedConfigRoots(configRoots: readonly string[]): PreparedRoot[] {
+  const cached = preparedRootCache.get(configRoots);
+  if (cached) return cached;
+  const prepared = configRoots.map((root): PreparedRoot => {
+    const normalized = normalizeSlashes(root);
+    const posixBase = path.resolve(normalized);
+    const winBase = path.win32.resolve(normalized).toLowerCase();
+    return {
+      windows: isWindowsAbsolutePath(normalized),
+      posix: { base: posixBase, withSeparator: posixBase.endsWith(path.sep) ? posixBase : posixBase + path.sep },
+      win: { base: winBase, withSeparator: winBase.endsWith("\\") ? winBase : winBase + "\\" },
+    };
+  });
+  preparedRootCache.set(configRoots, prepared);
+  return prepared;
 }
 
 export async function getAllowedFileRoots(): Promise<Set<string>> {
