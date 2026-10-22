@@ -164,7 +164,11 @@ export async function handleAttachmentUpload(request: Request, presetDirectory?:
           } finally {
             await handle.close();
           }
-          if (hasText) attachment.textPath = extracted;
+          // An archive whose members are all binary (or that is empty) exits
+          // successfully without emitting a section: an empty sections file
+          // would send the agent to a path that holds nothing, so the original
+          // alone is attached instead.
+          if (hasText && (await fs.stat(extracted)).size > 0) attachment.textPath = extracted;
           else await fs.rm(extracted, { force: true });
         }
         attachments.push(attachment);

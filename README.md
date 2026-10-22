@@ -407,6 +407,14 @@ pages without a text layer use Tesseract OCR with installed Russian/English
 language data. DOCX is parsed as XML, XLSX is read without evaluating formulas
 or following external links, and neither format executes macros. Office
 containers expanding beyond 512 MiB fail with an explicit safety error.
+
+Archives are read in place, without writing extracted members to disk: zip,
+jar, war, whl and apk, tar (plain or gz/bz2/xz), single-file gz/bz2/xz streams,
+and 7z/rar through the `7z` command-line tool. Text members at the first level
+become extracted sections; binary and nested-archive members are skipped, and
+an archive with no text is attached as its original. Archives that expand
+beyond 512 MiB or hold more than 20,000 entries fail with an explicit safety
+error.
 ## Environment Variables
 
 | Variable | Description | Default |
