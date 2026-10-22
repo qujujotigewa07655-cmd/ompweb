@@ -10,6 +10,7 @@ import { useNavigationHistory } from "@/hooks/useNavigationHistory";
 import { isMacPlatform, navigateShortcutHint, NAVIGATION_HISTORY_MAX_ENTRIES } from "@/lib/navigation-history";
 import { useMobileSidebarGestures } from "@/hooks/useMobileSidebarGestures";
 import { SessionSidebar } from "./SessionSidebar";
+import { ImageGenerationDialog } from "./ImageGenerationDialog";
 import type { WorktreeContext } from "./SessionSidebar-helpers";
 import { ToastProvider } from "./ui/toast";
 import { toast } from "./ui/toast";
@@ -22,7 +23,7 @@ import type { RightPanelView } from "./RightPanel";
 import { BranchNavigator } from "./BranchNavigator";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { CommandPaletteMount } from "./CommandPaletteMount";
-import { Check, ChevronDown, Command, Ellipsis, Folder, GitBranch, History, Menu, PanelLeft, PanelRight, Terminal, Wand2, Zap } from "lucide-react";
+import { Check, ChevronDown, Command, Ellipsis, Folder, GitBranch, History, ImagePlus, Menu, PanelLeft, PanelRight, Terminal, Wand2, Zap } from "lucide-react";
 import { ThemeSwitcher } from "./ThemeSwitcher";
 import { translate, useI18n } from "@/lib/i18n";
 import { formatApiError } from "@/lib/i18n/api-error";
@@ -133,6 +134,8 @@ export function AppShell({ appName }: { appName: string }) {
   const [explorerRefreshing, setExplorerRefreshing] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const [archiveBrowserOpen, setArchiveBrowserOpen] = useState(false);
+  // The image generator writes into the active project.
+  const [imageGenerationOpen, setImageGenerationOpen] = useState(false);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
@@ -1825,6 +1828,13 @@ export function AppShell({ appName }: { appName: string }) {
   return (
     <>
     <ToastProvider>
+      {imageGenerationOpen && (
+        <ImageGenerationDialog
+          cwd={explorerCwd}
+          onClose={() => setImageGenerationOpen(false)}
+          onOpenFile={handleOpenLinkedFile}
+        />
+      )}
       <ConfirmDialog
         open={sidebarHistory.exitConfirmationOpen}
         onOpenChange={(open) => { if (!open) sidebarHistory.cancelExit(); }}
@@ -2113,6 +2123,15 @@ export function AppShell({ appName }: { appName: string }) {
                   className="shell-toolbar-btn ui-focus-ring"
                 >
                   <Terminal size={16} strokeWidth={1.8} aria-hidden="true" style={{ color: systemPrompt ? "var(--accent)" : undefined }} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImageGenerationOpen(true)}
+                  title={t("imageGeneration.open")}
+                  aria-label={t("imageGeneration.open")}
+                  className="shell-toolbar-btn ui-focus-ring"
+                >
+                  <ImagePlus size={16} strokeWidth={1.8} aria-hidden="true" />
                 </button>
               </>
             )}

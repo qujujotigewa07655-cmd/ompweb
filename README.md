@@ -326,6 +326,7 @@ host (KDE Plasma, and most Wayland/X11 desktops).
 - **Tool Preset Picker**: Choose the toolset for new sessions in the composer — `none` / `default` (`read,bash,edit,write`) / `full` (all tools including subagents). Persists to localStorage.
 - **File Explorer & Previews**: Browse workspaces side-by-side with chat; preview code, markdown, Mermaid, images, audio, PDFs, and diffs with allow-listed access.
 - **Full-text Search**: Search complete messages, tool output, compressed session archives, and managed project file contents, with exact-match previews and document page/paragraph/sheet locations. Open **Search messages & files** in the sidebar.
+- **Subscription Image Generation**: Create, preview and download images from the header using only the existing GPT/ChatGPT or Gemini/Antigravity subscription in OMP. No separate image API key or paid-API fallback.
 - **Git Worktree Support**: Create, switch, and manage Git worktrees directly from the sidebar; sessions and file roots stay grouped by project.
 - **Usage & Analytics**: Dashboard in **Settings → Usage** for tokens, costs, cache savings, and breakdowns by provider / model / day / project with SQLite persistence.
 - **Windows System Tray & Service**: Background service, tray icon, logon autostart, and Desktop/Start Menu shortcuts (Windows).
@@ -364,6 +365,15 @@ Queries are answered in well under a second on a history of 1.3 GB, and the
 first index build takes a few minutes; both measured against a real history on
 the development machine.
 
+## Image generation
+
+The header button **Create image** generates an image with the GPT/ChatGPT or
+the Gemini/Antigravity subscription that is already signed in to OMP. The
+carrier model comes from the subscription catalog; no separate API key and no
+paid API are used, and there is no switch to another provider. The request runs
+only when **Create** is pressed and spends that subscription's quota. Generated
+files are written into the active project and can be opened or downloaded from
+the dialog.
 ## Environment Variables
 
 | Variable | Description | Default |

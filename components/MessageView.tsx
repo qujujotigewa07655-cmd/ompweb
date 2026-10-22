@@ -270,7 +270,8 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
 // lib/types.ts ImageContent uses the Anthropic-style {source:{type,data,media_type,url}}
 // shape; pi-ai on-disk format uses flat {data, mimeType} — handle both.
 function imageBlockSrc(img: ImageContent): string {
-  const flat = img as unknown as { data?: string; mimeType?: string };
+  const flat = img as unknown as { data?: string; mimeType?: string; url?: string };
+  if (flat.url) return flat.url;
   return img.source
     ? img.source.type === "base64"
       ? `data:${img.source.media_type};base64,${img.source.data}`
@@ -805,6 +806,19 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
     return <ToolCallBlock block={tc} result={result} duration={duration} isStreaming={isStreaming} defaultCollapsed={toolCallsDefaultCollapsed} onOpenFile={onOpenFile} />;
+  }
+  if (block.type === "image") {
+    const image = block as unknown as { source?: { media_type?: string }; mimeType?: string };
+    const src = imageBlockSrc(block as unknown as ImageContent);
+    if (!src) return null;
+    const mime = image.mimeType ?? image.source?.media_type;
+    const extension = mime === "image/jpeg" ? "jpg" : mime === "image/webp" ? "webp" : "png";
+    return (
+      <figure style={{ margin: "8px 0", minWidth: 0 }}>
+        <ClickableImage src={src} alt="" style={{ maxWidth: "100%", maxHeight: 480, objectFit: "contain", borderRadius: 8 }} />
+        <figcaption><a href={src} download={`generated-image.${extension}`} className="ui-focus-ring">{translate("messageView.downloadImage")}</a></figcaption>
+      </figure>
+    );
   }
   return null;
 }
