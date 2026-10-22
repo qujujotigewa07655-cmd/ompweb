@@ -19,7 +19,8 @@ export function proxy(request: NextRequest) {
   // deployment already serves, and they own no agent session either.
   // /api/image-generation is the same kind of endpoint: it shells out to
   // `omp` for the subscription catalog and writes the generated files into
-  // the project this deployment already serves.
+  // the project this deployment already serves. /api/attachments stores the
+  // uploaded originals and their extracted text in the same project.
   if (
     process.env.OMP_WEB_FRONTEND_ONLY === "1"
     && request.nextUrl.pathname.startsWith("/api/")
@@ -28,6 +29,7 @@ export function proxy(request: NextRequest) {
     && request.nextUrl.pathname !== "/api/search/preview"
     && request.nextUrl.pathname !== "/api/search/status"
     && request.nextUrl.pathname !== "/api/image-generation"
+    && request.nextUrl.pathname !== "/api/attachments"
   ) {
     return NextResponse.json({ error: "This frontend uses the existing OMPWeb API server" }, { status: 503 });
   }

@@ -1732,5 +1732,9 @@
   "imageGeneration.generateError": "生成に失敗しました。",
   "imageGeneration.failed": "画像を生成できませんでした。",
   "imageGeneration.subscriptionUnavailable": "サブスクリプションを利用できません。",
-  "messageView.downloadImage": "画像をダウンロード"
+  "messageView.downloadImage": "画像をダウンロード",
+  "chatInput.attachmentProjectRequired": "ファイルを添付する前にプロジェクトの作業ディレクトリを選択してください。",
+  "chatInput.attachmentUploading": "添付ファイルをアップロードして準備中…",
+  "chatInput.attachmentUploadFailed": "添付ファイルのアップロードに失敗しました。",
+  "fileExplorer.uploadTooManyFiles": "ファイルは最大 {count} 件までです。いずれも受け入れられませんでした。"
 }

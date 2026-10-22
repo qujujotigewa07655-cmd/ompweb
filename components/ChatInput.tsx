@@ -51,7 +51,9 @@ import {
   composeMessageWithTextAttachments,
   describeTextAttachmentSkip,
   formatAttachmentBytes,
+  MAX_ATTACHED_TEXT_BYTES,
   MAX_ATTACHED_TEXT_FILES,
+  isTextAttachmentFile,
   selectTextAttachments,
 } from "@/lib/chat-attachments";
 import {
@@ -59,6 +61,8 @@ import {
   MAX_ATTACHED_IMAGES,
   validateOutgoingPrompt,
 } from "@/lib/image-attachments";
+import { uploadFileBatch } from "@/lib/file-upload-client";
+import { validateUploadBatch } from "@/lib/file-upload-limits";
 import {
   buildEntriesFromFiles, buildAtInsertText, extractAtQuery, filterFileEntries,
   type AtQueryMatch, type FileIndexEntry,
@@ -647,12 +651,58 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     }
   }, []);
 
+  /**
+   * Upload a document to the workspace and reference it by path.
+   *
+   * A text file that fits the inline budget keeps its old path: inlining a
+   * small file is cheaper than a round trip. Everything else — a large file,
+   * a PDF, a spreadsheet — is uploaded, its text is extracted on the server,
+   * and the prompt carries the path so the agent reads the sections itself.
+   */
+  const processUploadedFiles = useCallback(async (files: File[]) => {
+    if (!files.length) return;
+    const used = attachedImagesRef.current.length + attachedTextFilesRef.current.length + pendingTextFileCountRef.current;
+    const invalid = validateUploadBatch(files, used);
+    if (invalid) { setAttachError(invalid); return; }
+    if (!cwd) { setAttachError(t("chatInput.attachmentProjectRequired")); return; }
+    const revision = attachmentRevisionRef.current;
+    const controller = new AbortController();
+    pendingTextFileCountRef.current += files.length;
+    pendingTextFileBytesRef.current += files.reduce((total, file) => total + file.size, 0);
+    setAttachError(t("chatInput.attachmentUploading"));
+    try {
+      const { status, data } = await uploadFileBatch(files, { directory: cwd, attachments: true, signal: controller.signal });
+      if (status !== 200 || !data.attachments) throw new Error(data.error ?? t("chatInput.attachmentUploadFailed"));
+      if (attachmentRevisionRef.current !== revision) return;
+      const documents: AttachedTextFile[] = [];
+      for (const file of data.attachments) {
+        if (file.image) continue;
+        documents.push({ name: file.name, mimeType: file.mimeType, size: file.size, path: file.path, textPath: file.textPath, content: "" });
+      }
+      attachedTextFilesRef.current = [...attachedTextFilesRef.current, ...documents];
+      setAttachedTextFiles(attachedTextFilesRef.current);
+      setAttachError(null);
+    } catch (error) {
+      if (!controller.signal.aborted && attachmentRevisionRef.current === revision) {
+        setAttachError(error instanceof Error ? error.message : t("chatInput.attachmentUploadFailed"));
+      }
+    } finally {
+      pendingTextFileCountRef.current -= files.length;
+      pendingTextFileBytesRef.current -= files.reduce((total, file) => total + file.size, 0);
+    }
+  }, [cwd, t]);
+
   const processFiles = useCallback((files: File[]) => {
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
     const otherFiles = files.filter((file) => !file.type.startsWith("image/"));
     void processImageFiles(imageFiles);
-    void processTextFiles(otherFiles);
-  }, [processImageFiles, processTextFiles]);
+    // A text file that fits the inline budget is inlined; a document or an
+    // oversized file is uploaded and referenced by path.
+    const inline = otherFiles.filter((file) => file.size <= MAX_ATTACHED_TEXT_BYTES && isTextAttachmentFile(file));
+    const uploaded = otherFiles.filter((file) => !inline.includes(file));
+    void processTextFiles(inline);
+    if (uploaded.length) void processUploadedFiles(uploaded);
+  }, [processImageFiles, processTextFiles, processUploadedFiles]);
 
   const processFilesRef = useRef(processFiles);
   processFilesRef.current = processFiles;

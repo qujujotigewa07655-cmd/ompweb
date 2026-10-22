@@ -327,6 +327,7 @@ host (KDE Plasma, and most Wayland/X11 desktops).
 - **File Explorer & Previews**: Browse workspaces side-by-side with chat; preview code, markdown, Mermaid, images, audio, PDFs, and diffs with allow-listed access.
 - **Full-text Search**: Search complete messages, tool output, compressed session archives, and managed project file contents, with exact-match previews and document page/paragraph/sheet locations. Open **Search messages & files** in the sidebar.
 - **Subscription Image Generation**: Create, preview and download images from the header using only the existing GPT/ChatGPT or Gemini/Antigravity subscription in OMP. No separate image API key or paid-API fallback.
+- **Document Attachments**: Attach up to 10 original files, 50 MiB each, including PDF, DOCX and XLSX. Originals stay in the workspace; extracted text and bounded image derivatives avoid oversized chat payloads.
 - **Git Worktree Support**: Create, switch, and manage Git worktrees directly from the sidebar; sessions and file roots stay grouped by project.
 - **Usage & Analytics**: Dashboard in **Settings → Usage** for tokens, costs, cache savings, and breakdowns by provider / model / day / project with SQLite persistence.
 - **Windows System Tray & Service**: Background service, tray icon, logon autostart, and Desktop/Start Menu shortcuts (Windows).
@@ -374,6 +375,23 @@ paid API are used, and there is no switch to another provider. The request runs
 only when **Create** is pressed and spends that subscription's quota. Generated
 files are written into the active project and can be opened or downloaded from
 the dialog.
+## Attachments
+
+The composer and the file explorer accept at most 10 originals per batch, with
+a 50 MiB (52,428,800-byte) per-file limit. A text file that fits the inline
+budget is inlined into the prompt as before; a document or an oversized file is
+uploaded to the workspace, its text is extracted on the server, and the prompt
+carries the path so the agent reads the extracted sections itself. Original
+attachments and their extracted text are written under the workspace's
+`.omp-attachments-*` directory.
+
+Files travel in 1 MiB chunks with server-side byte/offset checks and abort
+cleanup. Invalid batches are rejected without partial selection. Document
+handling requires `python3`, PyMuPDF, Pillow, pytesseract and openpyxl. PDF
+pages without a text layer use Tesseract OCR with installed Russian/English
+language data. DOCX is parsed as XML, XLSX is read without evaluating formulas
+or following external links, and neither format executes macros. Office
+containers expanding beyond 512 MiB fail with an explicit safety error.
 ## Environment Variables
 
 | Variable | Description | Default |

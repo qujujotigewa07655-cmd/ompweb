@@ -8,6 +8,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ### Added
 
+- Chunked composer/explorer uploads: up to 10 original files, 50 MiB per file, server-side byte checks, original-file preservation, document extraction and bounded vision derivatives. PDF scans support installed Russian/English OCR.
 - Header image generation for existing GPT/ChatGPT and Gemini/Antigravity subscriptions only, with native model selection, server-side OAuth, saved-image previews and downloads. No separate API keys and no paid-API/provider fallback; generation uses subscription quota.
 - Full-text search across complete conversations, tool output, compressed archives and managed project text/PDF/DOCX/XLSX contents, with exact-entry and read-only archive previews. Searches read a persistent SQLite index of parsed sources (`search/index.sqlite` in omp-web's data directory) that is refreshed by modification time instead of re-parsing every transcript on each request; the first search reports its file progress, and plain text/code files are read in-process instead of through a `python3` per file.
 

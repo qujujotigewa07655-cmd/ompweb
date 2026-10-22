@@ -33,7 +33,7 @@ export function draftImagesToAttachedImages(images: ChatDraftImage[] | undefined
 }
 
 export function textFileToDraftFile(file: AttachedTextFile): ChatDraftFile {
-  return { name: file.name, mimeType: file.mimeType, content: file.content, size: file.size };
+  return { name: file.name, mimeType: file.mimeType, content: file.content, size: file.size, path: file.path, textPath: file.textPath };
 }
 
 export function draftFilesToAttachedFiles(files: ChatDraftFile[] | undefined): AttachedTextFile[] {
@@ -41,7 +41,11 @@ export function draftFilesToAttachedFiles(files: ChatDraftFile[] | undefined): A
     && typeof file.mimeType === "string"
     && typeof file.content === "string"
     && Number.isFinite(file.size));
-  return selectTextAttachments(shaped, { usedBytes: 0, usedSlots: 0 }).accepted;
+  const inline = selectTextAttachments(shaped, { usedBytes: 0, usedSlots: 0 }).accepted;
+  // An uploaded file has no inline content and must not be dropped by the
+  // inline budget: it is restored from its path in the workspace.
+  const uploaded = shaped.filter((file) => typeof file.path === "string" && !inline.includes(file));
+  return [...inline, ...uploaded];
 }
 
 export function revokeImagePreview(image: AttachedImage): void {

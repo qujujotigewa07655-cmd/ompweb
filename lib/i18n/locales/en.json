@@ -1769,5 +1769,9 @@
   "imageGeneration.generateError": "Generation failed.",
   "imageGeneration.failed": "The image was not generated.",
   "imageGeneration.subscriptionUnavailable": "The subscription is unavailable.",
-  "messageView.downloadImage": "Download image"
+  "messageView.downloadImage": "Download image",
+  "chatInput.attachmentProjectRequired": "Select a project working directory before attaching files.",
+  "chatInput.attachmentUploading": "Uploading and preparing attachments…",
+  "chatInput.attachmentUploadFailed": "The attachment upload failed.",
+  "fileExplorer.uploadTooManyFiles": "Select at most {count} files. No files were accepted."
 }

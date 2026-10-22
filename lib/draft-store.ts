@@ -1,6 +1,12 @@
 export interface ChatDraftImage {
   data: string;
   mimeType: string;
+  /** Set when the image was uploaded to the workspace: the path replaces the inline bytes. */
+  path?: string;
+  /** The bounded vision derivative the agent reads. */
+  visionPath?: string;
+  name?: string;
+  size?: number;
 }
 
 export interface ChatDraftFile {
@@ -8,6 +14,10 @@ export interface ChatDraftFile {
   mimeType: string;
   content: string;
   size: number;
+  /** Set when the file was uploaded to the workspace: the path replaces the inline content. */
+  path?: string;
+  /** The extracted sections of an uploaded document. */
+  textPath?: string;
 }
 
 export interface ChatDraft {
@@ -68,7 +78,13 @@ function readStoredDrafts(): Map<string, ChatDraft> {
       }
       const value = sessionStorage.getItem(storageKey);
       if (value) {
-        stored.set(storageKey.slice(STORAGE_PREFIX.length), { value, images: [], files: [] });
+        // A draft written before the attachment paths existed holds only the
+        // text; a newer one is a JSON object with the uploaded paths.
+        const parsed: unknown = value.startsWith("{\"draftVersion\":1,") ? JSON.parse(value) : null;
+        const draft = parsed as { value?: string; images?: ChatDraftImage[]; files?: ChatDraftFile[] } | null;
+        stored.set(storageKey.slice(STORAGE_PREFIX.length), draft && typeof draft.value === "string"
+          ? { value: draft.value, images: Array.isArray(draft.images) ? draft.images : [], files: Array.isArray(draft.files) ? draft.files : [] }
+          : { value, images: [], files: [] });
       } else {
         sessionStorage.removeItem(storageKey);
       }
@@ -147,9 +163,14 @@ export function setDraft(key: string, draft: ChatDraft): void {
   }
   drafts.set(key, cloneDraft(draft));
   try {
-    // Persist only text: attachment payloads can exhaust the tab's storage quota.
-    if (draft.value) sessionStorage.setItem(STORAGE_PREFIX + key, draft.value);
-    else sessionStorage.removeItem(STORAGE_PREFIX + key);
+    // Persist the text and the paths of uploaded attachments. The bytes of an
+    // inline attachment would exhaust the tab's storage quota, so an uploaded
+    // file is kept as its path and restored from the workspace.
+    const files = draft.files.filter((file) => file.path).map((file) => ({ ...file, content: "" }));
+    const images = draft.images.filter((image) => image.path).map((image) => ({ ...image, data: "" }));
+    if (draft.value || files.length || images.length) {
+      sessionStorage.setItem(STORAGE_PREFIX + key, JSON.stringify({ draftVersion: 1, value: draft.value, images, files }));
+    } else sessionStorage.removeItem(STORAGE_PREFIX + key);
   } catch {
     // Preserve the in-memory draft if storage is unavailable or full.
   }

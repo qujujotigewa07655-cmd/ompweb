@@ -29,6 +29,7 @@ import {
 import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/git-types";
 import { MAX_RESULT_LIMIT, type FileIndexEntry } from "@/lib/file-fuzzy";
 import { buildSearchRows } from "@/lib/search-results";
+import { MAX_UPLOAD_FILES } from "@/lib/file-upload-limits";
 
 interface FileEntry {
   name: string;
@@ -878,6 +879,15 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setUploadError(null);
     setUploadProgress(0);
     setUploadPhase("uploading");
+
+    // A batch of more than ten originals is refused whole, so a partly
+    // uploaded drop never leaves the user guessing which files landed.
+    const tooMany = files.length > MAX_UPLOAD_FILES;
+    if (tooMany) {
+      setUploadError(translate("fileExplorer.uploadTooManyFiles", { count: MAX_UPLOAD_FILES }));
+      setUploadPhase("idle");
+      return;
+    }
 
     try {
       const { status, data } = await uploadFiles(cwd, files, strategy, setUploadProgress);
