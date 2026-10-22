@@ -4,6 +4,12 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ---
 
+## Unreleased
+
+### Added
+
+- Full-text search across complete conversations, tool output, compressed archives and managed project text/PDF/DOCX/XLSX contents, with exact-entry and read-only archive previews. Searches read a persistent SQLite index of parsed sources (`search/index.sqlite` in omp-web's data directory) that is refreshed by modification time instead of re-parsing every transcript on each request; the first search reports its file progress, and plain text/code files are read in-process instead of through a `python3` per file.
+
 ## [v0.5.2] - 2026-10-15
 
 ### Breaking changes

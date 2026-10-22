@@ -14,11 +14,16 @@ export function proxy(request: NextRequest) {
   // Refuse direct API access rather than spawning a second owner for a session.
   // /api/provider-usage is the exception: it only shells out to `omp usage`,
   // owns no session, and its balance normalization lives in this deployment's
-  // source rather than in the compiled server package.
+  // source rather than in the compiled server package. The search endpoints
+  // are read-only views of the transcripts and the project files this
+  // deployment already serves, and they own no agent session either.
   if (
     process.env.OMP_WEB_FRONTEND_ONLY === "1"
     && request.nextUrl.pathname.startsWith("/api/")
     && request.nextUrl.pathname !== "/api/provider-usage"
+    && request.nextUrl.pathname !== "/api/search"
+    && request.nextUrl.pathname !== "/api/search/preview"
+    && request.nextUrl.pathname !== "/api/search/status"
   ) {
     return NextResponse.json({ error: "This frontend uses the existing OMPWeb API server" }, { status: 503 });
   }

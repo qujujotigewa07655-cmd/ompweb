@@ -1815,6 +1815,7 @@ export function AppShell({ appName }: { appName: string }) {
       settingsOpen={Boolean(settingsTab)}
       onOpenSettings={() => setSettingsTab((prev) => prev ? null : "general")}
       onOpenArchive={() => setArchiveBrowserOpen(true)}
+      onOpenFile={handleOpenLinkedFile}
       navigation={sidebarNavigation}
       updateAvailable={Boolean(appUpdate?.updateAvailable) || ompUpdateAvailable}
       onClose={isMobile ? handleSidebarToggle : undefined}

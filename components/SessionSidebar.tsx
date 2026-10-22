@@ -33,6 +33,7 @@ import {
 } from "./SessionSidebar-helpers";
 import { OmpWebTitle, SIDEBAR_BUTTON_TRANSITION, SidebarIconButton } from "./SessionSidebar-chrome";
 import { ProjectRow } from "./SessionSidebar-rows";
+import { FullTextSearch } from "./FullTextSearch";
 
 /** Deadline for one /api/sessions fetch. A wedged-but-listening server never
  * answers; without this the initial spinner would pend forever. */
@@ -73,6 +74,8 @@ interface Props {
   updateAvailable?: boolean;
   /** Opens the archived sessions browser. */
   onOpenArchive?: () => void;
+  /** Opens a file in the explorer, used by the full-text search preview. */
+  onOpenFile?: (filePath: string, location?: string, query?: string) => void;
   /** In-app back/forward over visited chat views (sidebar header buttons). */
   navigation?: {
     canBack: boolean;
@@ -94,7 +97,7 @@ interface Props {
 
 
 
-export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onWorkspaceOptionsChange, onWorktreeContextChange, addProjectOpen, setAddProjectOpen, usageVisible = true, onOpenSettings, onOpenArchive, navigation, updateAvailable, settingsOpen = false, onClose }: Props) {
+export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onWorkspaceOptionsChange, onWorktreeContextChange, addProjectOpen, setAddProjectOpen, usageVisible = true, onOpenSettings, onOpenArchive, onOpenFile, navigation, updateAvailable, settingsOpen = false, onClose }: Props) {
 
 
   const { t } = useI18n();
@@ -133,6 +136,8 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
   // Client-side workspace/session filtering (Workspaces header controls).
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  // The full-text search across messages, archives and project files.
+  const [fullTextSearchOpen, setFullTextSearchOpen] = useState(false);
   const [runningOnly, setRunningOnly] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -1250,6 +1255,15 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
         </button>
       </div>
 
+      <button
+        type="button"
+        className="sidebar-session-search ui-focus-ring"
+        onClick={() => setFullTextSearchOpen(true)}
+        style={{ margin: "8px 10px", padding: "8px 10px", display: "flex", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", textAlign: "left" }}
+      >
+        <Search size={15} aria-hidden="true" /> {t("sessionSidebar.fullTextSearch")}
+      </button>
+
       {/* Workspaces section header: label + search / filter / add */}
       <div style={{ flexShrink: 0, padding: "4px 10px 2px", display: "flex", alignItems: "center", gap: 2 }}>
         <span
@@ -1454,6 +1468,13 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
           <ChevronRight size={13} strokeWidth={2} style={{ flexShrink: 0, color: "var(--text-dim)" }} aria-hidden="true" />
         </button>
       </div>
+      {fullTextSearchOpen && (
+        <FullTextSearch
+          onClose={() => setFullTextSearchOpen(false)}
+          onSelectSession={handleSelectSessionFromList}
+          onOpenFile={onOpenFile}
+        />
+      )}
     </div>
   );
 });
