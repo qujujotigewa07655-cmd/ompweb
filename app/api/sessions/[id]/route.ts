@@ -22,6 +22,7 @@ import {
   getSessionEntriesForDisplayAsync,
   buildSessionContext,
   readSessionHeader,
+  SessionChangedError,
   SessionFileTooLargeError,
 } from "@/lib/session-reader";
 import { resolveSessionPathOr404 } from "@/lib/api-utils";
@@ -37,6 +38,9 @@ function sessionsErrorResponse(error: unknown): NextResponse {
       { error: "Session file is too large to open in omp-web", code: "session_file_too_large" },
       { status: 413 },
     );
+  }
+  if (error instanceof SessionChangedError) {
+    return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });
   }
   if (error instanceof RequestBodyTooLargeError) {
     return NextResponse.json({ error: "Request body is too large", code: "request_too_large" }, { status: 413 });

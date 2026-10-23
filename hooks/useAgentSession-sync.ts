@@ -96,7 +96,21 @@ export function createSessionCatchUp(options: {
             const timeout = setTimeout(() => controller.abort(), 30_000);
             let page: SessionSyncResponse;
             try {
-              const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/context?${params}`, { signal: controller.signal });
+              const url = `/api/sessions/${encodeURIComponent(sid)}/context?${params}`;
+              let res = await fetch(url, { signal: controller.signal });
+              // 409 session_changed: omp appended to the file between indexing
+              // and the body read, so the offsets no longer address their
+              // bytes. Retry once — the re-read indexes the new version. This
+              // is the measured cause of 321 bare 500s, previously retried
+              // only when the next trigger happened to arrive.
+              if (res.status === 409) {
+                const body = await res.json().catch(() => null) as { code?: string } | null;
+                if (body?.code === "session_changed") {
+                  await new Promise((resolve) => setTimeout(resolve, 120));
+                  if (options.scope() !== scope || revision !== version || options.sessionId() !== sid) break;
+                  res = await fetch(url, { signal: controller.signal });
+                }
+              }
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               page = await res.json() as SessionSyncResponse;
             } finally {

@@ -32,6 +32,7 @@ import { projectIdentityKey, sessionPathKey } from "./paths";
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { selectHistoryRange, type SessionHistoryCursor, type SessionHistoryPage } from "./session-sync";
 import { PASSIVE_TOOL_CONTEXT } from "./chat-transcript-plan";
+import { getSessionUsageTotals } from "./usage-db";
 
 export { getAgentDir };
 
@@ -54,6 +55,10 @@ function matchParentSessionId(
 
 async function loadAllSessions(): Promise<SessionInfo[]> {
   const ompSessions: OmpSessionInfo[] = await listAllSessionInfos();
+  // Cost/model annotation: cheap (one grouped read, measured ~80 ms over 745
+  // sessions) and independently failure-tolerant, so it runs beside the
+  // project resolution instead of serializing behind it.
+  const usagePromise = getSessionUsageTotals().catch(() => null);
   const pathToId = new Map<string, string>();
   const knownIds = new Set<string>();
   for (const s of ompSessions) {
@@ -74,9 +79,12 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
     }));
   }
 
+  const usageBySession = await usagePromise;
+
   return ompSessions.map((s) => {
     cacheSessionPath(s.id, s.path);
     const project = s.cwd ? projectByCwd.get(s.cwd) : undefined;
+    const usage = usageBySession?.get(s.id);
     return {
       path: s.path,
       id: s.id,
@@ -95,6 +103,8 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
       projectRoot: project?.projectRoot ?? s.cwd,
       projectKey: projectIdentityKey(project?.projectRoot ?? s.cwd),
       ...(project?.isWorktree && project.branch ? { worktreeBranch: project.branch } : {}),
+      ...(usage && usage.cost > 0 ? { costUsd: usage.cost, tokens: usage.tokens } : {}),
+      ...(usage?.model ? { lastModel: usage.model } : {}),
     };
   });
 }
@@ -440,6 +450,24 @@ export class SessionFileTooLargeError extends Error {
 }
 
 /**
+ * The session file grew or was rewritten between indexing and the body read,
+ * so the offsets no longer address the bytes they were measured on.
+ *
+ * This is normal for a session omp is still appending to — measured 321 HTTP
+ * 500s across 30 sessions, retried every ~68 s by the client. It is a
+ * retryable condition, not a server defect: routes map it to 409 with the
+ * stable `session_changed` code and the client re-reads once immediately
+ * instead of showing an empty transcript.
+ */
+export class SessionChangedError extends Error {
+  readonly code = "session_changed" as const;
+  constructor(message = "Session changed while reading history") {
+    super(message);
+    this.name = "SessionChangedError";
+  }
+}
+
+/**
  * Display-path entry read for the session/context routes: reuses the memoized
  * (size, mtimeMs) parse cache WITHOUT blob resolution for entries that don't
  * reference blobs, and deep-copies ONLY the entries that do before resolving
@@ -673,7 +701,7 @@ function getSessionHistoryIndex(filePath: string, leafId?: string, includePreCom
   let index = cache.get(key);
   if (!index) {
     index = buildHistoryIndex(filePath, version, leafId, includePreCompaction);
-    if (stat && historyFileVersion(statSync(filePath)) !== version) throw new Error("Session changed while indexing history");
+    if (stat && historyFileVersion(statSync(filePath)) !== version) throw new SessionChangedError("Session changed while indexing history");
     // An unusually metadata-heavy file still opens, but cannot evict every
     // peer or retain more than the entire index budget by itself.
     if (stat && index.bytes <= MAX_HISTORY_INDEX_BYTES) cache.set(key, index);
@@ -715,14 +743,14 @@ export function getSessionHistoryPage(
   if (start < end) {
     const fd = openSync(filePath, "r");
     try {
-      if (historyFileVersion(fstatSync(fd)) !== version) throw new Error("Session changed before reading history");
+      if (historyFileVersion(fstatSync(fd)) !== version) throw new SessionChangedError("Session changed before reading history");
       for (let i = start; i < end; i++) {
         const row = index.rows[i];
         const buffer = Buffer.allocUnsafe(row.length);
         let read = 0;
         while (read < buffer.length) {
           const count = readSync(fd, buffer, read, buffer.length - read, row.offset + read);
-          if (count === 0) throw new Error("Session truncated while reading history");
+          if (count === 0) throw new SessionChangedError("Session truncated while reading history");
           read += count;
         }
         const entry = JSON.parse(buffer.toString("utf8").trim()) as SessionEntry;
@@ -737,7 +765,7 @@ export function getSessionHistoryPage(
         rawEntries.push(entry);
       }
       if (historyFileVersion(fstatSync(fd)) !== version || historyFileVersion(statSync(filePath)) !== version) {
-        throw new Error("Session changed while reading history");
+        throw new SessionChangedError("Session changed while reading history");
       }
     } catch (error) {
       cache.delete(key);

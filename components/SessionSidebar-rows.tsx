@@ -12,6 +12,7 @@ import { toast } from "./ui/toast";
 import {
   MAX_PROJECT_SESSIONS,
   formatRelativeTime,
+  formatSessionCost,
   projectLabel,
   type SessionTreeNode,
 } from "./SessionSidebar-helpers";
@@ -581,6 +582,13 @@ const SessionItem = memo(function SessionItem({
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const title = session.name || session.firstMessage.slice(0, 50) || session.id.slice(0, 12);
   const relativeTime = formatRelativeTime(session.modified, locale, relativeTimeNow);
+  const sessionCost = formatSessionCost(session.costUsd);
+  const sessionUpdatedAt = new Date(session.modified).toLocaleString(locale);
+  const sessionCostTitle = sessionCost
+    ? session.lastModel
+      ? t("sessionSidebar.costModelTitle", { cost: session.costUsd!.toFixed(2), model: session.lastModel, time: sessionUpdatedAt })
+      : t("sessionSidebar.costTitle", { cost: session.costUsd!.toFixed(2), time: sessionUpdatedAt })
+    : undefined;
   const rowBackground = isSelected
     ? "color-mix(in srgb, var(--bg-selected) 70%, transparent)"
     : hovered ? "var(--bg-hover)" : "transparent";
@@ -730,7 +738,9 @@ const SessionItem = memo(function SessionItem({
             )}
             <div className="session-item-trailing" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", flexShrink: 0 }}>
               <div className="session-item-metadata" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
-                {relativeTime && <span className="session-item-time" title={new Date(session.modified).toLocaleString(locale)} style={{ flexShrink: 0, whiteSpace: "nowrap", textAlign: "right", color: isSelected ? "var(--accent)" : "var(--text-dim)", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>{relativeTime}</span>}
+                {sessionCost
+                  ? <span className="session-item-cost" title={sessionCostTitle} style={{ flexShrink: 0, whiteSpace: "nowrap", textAlign: "right", color: isSelected ? "var(--accent)" : "var(--text-dim)", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>{sessionCost}</span>
+                  : relativeTime && <span className="session-item-time" title={new Date(session.modified).toLocaleString(locale)} style={{ flexShrink: 0, whiteSpace: "nowrap", textAlign: "right", color: isSelected ? "var(--accent)" : "var(--text-dim)", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>{relativeTime}</span>}
               </div>
               <div className="session-item-actions" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 2 }}>
                 <button type="button" ref={menuButtonRef} className="session-item-icon-button session-item-menu-button" onClick={(event) => { event.stopPropagation(); setActionMenuOpen((open) => !open); }} title={t("projects.actions")} aria-label={t("projects.actions")} aria-expanded={actionMenuOpen} style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 0, border: "none", borderRadius: "var(--radius-control)", background: actionMenuOpen ? "var(--bg-selected)" : "transparent", color: actionMenuOpen ? "var(--text)" : "var(--text-dim)", cursor: "pointer" }}>

@@ -452,6 +452,12 @@ export interface SessionInfo {
   projectKey?: string;
   /** Branch name when cwd is a linked git worktree (not the main checkout) */
   worktreeBranch?: string;
+  /** Billed cost of this session in USD, from omp's own usage records. */
+  costUsd?: number;
+  /** Total tokens billed to this session (input + output + cache). */
+  tokens?: number;
+  /** Model the session last ran on (the one its latest request used). */
+  lastModel?: string;
 }
 
 /** Metadata for a gzip-compressed session in OMP's archive tree. */

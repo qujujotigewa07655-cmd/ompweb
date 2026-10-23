@@ -1150,6 +1150,8 @@
   "sessionSidebar.uploadFiles": "ファイルをアップロード",
   "sessionSidebar.uploadFilesTitle": "プロジェクトルートにファイルをアップロードします",
   "sessionSidebar.worktreeTitle": "ワークツリー: {path}",
+  "sessionSidebar.costTitle": "セッションのコスト ${cost} · 更新 {time}",
+  "sessionSidebar.costModelTitle": "セッションのコスト ${cost} · 最後のモデル {model} · 更新 {time}",
   "sessionSidebar.worktreesLoading": "ワークツリー...",
   "sessionSidebar.worktreesLoadingTitle": "このディレクトリのワークツリーを確認しています。",
   "sessionSidebar.import": "セッションをインポート",

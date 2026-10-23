@@ -522,6 +522,32 @@ during the wait.
   `invalidateSessionFileListCache()` — never add a session-mutation path that
   forgets this. Regression test: `session-reader.test.mjs`.
 
+### Session list payload — keep it small, keep 304 working
+- `/api/sessions` is refetched on every agent turn by every open tab (measured
+  14 240 requests / 12.7 GB in four days). Two invariants protect it:
+  - **`firstMessage` is a bounded preview** (`SESSION_LIST_PREVIEW_CHARS` in
+    `lib/omp/session-files.ts`). The sidebar renders 50 characters; the full
+    text was 669 KB of a 1.07 MB response because 108 sessions start with a
+    12 KB `<memory>` preamble. Do not raise the cap to "show more" — add a
+    separate lazy field instead.
+  - **The handler compresses its own body.** Next's server compression covers
+    rendered pages and middleware, not App Router handlers, so
+    `jsonBodyResponse()` (`lib/api-utils.ts`) gzips when the client accepts it.
+    1.07 MB → 447 KB raw → 103 KB on the wire.
+- The response is also annotated with `costUsd` / `tokens` / `lastModel` from
+  `getSessionUsageTotals()` (`lib/usage-db.ts`): one grouped read over
+  `usage.db` sharing the report's duplicate-row filter. It must stay
+  failure-tolerant — an unreadable usage database costs the annotation, never
+  the list.
+
+### Session read races are 409, not 500
+- omp appends to a session file while omp-web reads it. `SessionChangedError`
+  (`lib/session-reader.ts`) marks that race; `sessionReadErrorResponse()`
+  (`lib/session-route-errors.ts`) maps it to `409 session_changed`, and both
+  readers retry once immediately. This was 321 bare 500s across 30 sessions —
+  a blank transcript in the UI, retried only when an unrelated trigger came.
+  Never let it fall through to `apiErrorResponse`.
+
 ### Chat scroll-follow
 - `useAgentSession` follows the conversation: the effect depends on both
   `messages` (boundaries) and `streamState` (every token batch) and throttles

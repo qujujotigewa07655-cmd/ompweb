@@ -949,7 +949,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (leafId) params.set("leafId", leafId);
       if (includePreCompaction) params.set("includePreCompaction", "1");
       const url = `/api/sessions/${encodeURIComponent(sid)}/context?${params}`;
-      const res = await fetch(url);
+      let res = await fetch(url);
+      // See the sync reader: a 409 session_changed is the file growing under
+      // the index, so one immediate re-read returns the new version.
+      if (res.status === 409) {
+        const body = await res.json().catch(() => null) as { code?: string } | null;
+        if (body?.code === "session_changed") {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          res = await fetch(url);
+        }
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as Pick<SessionData, "context">;
       // Fence like loadSession: drop the response if the session changed or a
@@ -1107,7 +1116,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const queueRevision = ++queueSeqRef.current;
     const skillDiagnosticsRevision = ++skillDiagnosticsSeqRef.current;
     try {
-      const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
+      // omitPrompt: this snapshot feeds the queue and diagnostics, never the
+      // System panel, and the joined prompt is 133 KB of its 135 KB.
+      const res = await fetch(`/api/agent/${encodeURIComponent(sid)}?omitPrompt=1`);
       if (!res.ok || !hookAliveRef.current || sessionIdRef.current !== sid) return;
       const data = await res.json() as { state?: AgentStateResponse };
       applyQueueStateSnapshot(queueRevision, data.state?.queuedMessages);
@@ -1734,7 +1745,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       const queueRevision = ++queueSeqRef.current;
       const skillDiagnosticsRevision = ++skillDiagnosticsSeqRef.current;
-      const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
+      // Reconcile never renders the prompt; the mount load already stored it.
+      const res = await fetch(`/api/agent/${encodeURIComponent(sid)}?omitPrompt=1`);
       if (!res.ok) return;
       const data = await res.json() as { running?: boolean; state?: AgentStateResponse };
       // A slow response can straddle a run boundary (previous run finished
@@ -1765,7 +1777,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (state?.contextUsage !== undefined) setContextUsage(state.contextUsage ?? null);
       if (busy || !agentRunningRef.current) return;
       if (state) {
-        if (state.systemPrompt !== undefined) setSystemPrompt(state.systemPrompt ?? null);
+        // No systemPrompt here: this reconcile asks with omitPrompt=1. The
+        // System panel reads the prompt on demand (POST get_state).
         if (state.extensionStatuses !== undefined) setExtensionStatuses(state.extensionStatuses ?? []);
         if (state.extensionWidgets !== undefined) setExtensionWidgets(state.extensionWidgets ?? []);
       }
@@ -2078,7 +2091,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           const endToken = beginAuthoritativeModelSync();
           const queueRevision = ++queueSeqRef.current;
           const skillDiagnosticsRevision = ++skillDiagnosticsSeqRef.current;
-          fetch(`/api/agent/${encodeURIComponent(endedSid)}`)
+          fetch(`/api/agent/${encodeURIComponent(endedSid)}?omitPrompt=1`)
             .then((r) => (r.ok ? r.json() as Promise<{ state?: AgentStateResponse }> : null))
             .then((d) => {
               // Stale terminal snapshot: the user switched sessions or started
@@ -2092,7 +2105,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               const applied = applyAuthoritativeModel(toThinkingModelMeta(d.state.model), endToken);
               if (!applied) return; // stale snapshot — drop everything derived from it
               if (d.state?.contextUsage !== undefined) setContextUsage(d.state.contextUsage ?? null);
-              if (d.state?.systemPrompt !== undefined) setSystemPrompt(d.state.systemPrompt || null);
               // Fast mode is family-scoped in omp: re-sync from the terminal
               // state so a run that switched models/families never leaves the
               // composer toggle stuck on a stale value.
@@ -2201,7 +2213,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const sid = sessionIdRef.current;
         if (!sid) break;
         const token = beginAuthoritativeModelSync();
-        void fetch(`/api/agent/${encodeURIComponent(sid)}`)
+        void fetch(`/api/agent/${encodeURIComponent(sid)}?omitPrompt=1`)
           .then((r) => (r.ok ? r.json() as Promise<{ state?: AgentStateResponse }> : null))
           .then((d) => {
             if (!d?.state?.model) return;

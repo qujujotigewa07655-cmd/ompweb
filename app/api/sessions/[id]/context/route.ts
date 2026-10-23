@@ -1,24 +1,11 @@
 import { NextResponse } from "next/server";
 import { existsSync } from "fs";
 import { loadSessionFile } from "@/lib/omp/session-files";
-import { buildSessionContext, getSessionContextBoundary, getSessionEntriesForDisplayAsync, getSessionHistoryPage, readSessionHeader, SessionFileTooLargeError } from "@/lib/session-reader";
-import { apiErrorResponse, resolveSessionPathOr404 } from "@/lib/api-utils";
+import { buildSessionContext, getSessionContextBoundary, getSessionEntriesForDisplayAsync, getSessionHistoryPage, readSessionHeader } from "@/lib/session-reader";
+import { resolveSessionPathOr404 } from "@/lib/api-utils";
+import { sessionReadErrorResponse } from "@/lib/session-route-errors";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { MAX_SYNC_MESSAGES, parseHistoryCursor, selectSessionHistory, type SessionHistoryCursor, type SessionSyncResponse } from "@/lib/session-sync";
-
-/** Uniform error mapping for this route: the display read throws
- * SessionFileTooLargeError on files past the load ceiling, which must surface
- * as the same 413 the null-header path returns — not a 500 so the frontend
- * does not treat history as gone. */
-function contextErrorResponse(error: unknown): NextResponse {
-  if (error instanceof SessionFileTooLargeError) {
-    return NextResponse.json(
-      { error: "Session file is too large to open in omp-web", code: "session_file_too_large" },
-      { status: 413 },
-    );
-  }
-  return apiErrorResponse(error);
-}
 
 export async function GET(
   req: Request,
@@ -124,6 +111,6 @@ export async function GET(
 
     return NextResponse.json({ context });
   } catch (error) {
-    return contextErrorResponse(error);
+    return sessionReadErrorResponse(error);
   }
 }

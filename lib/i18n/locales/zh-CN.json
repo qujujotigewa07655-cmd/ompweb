@@ -1150,6 +1150,8 @@
   "sessionSidebar.uploadFiles": "上传文件",
   "sessionSidebar.uploadFilesTitle": "上传文件到项目根目录",
   "sessionSidebar.worktreeTitle": "工作树：{path}",
+  "sessionSidebar.costTitle": "会话费用 ${cost} · 更新于 {time}",
+  "sessionSidebar.costModelTitle": "会话费用 ${cost} · 最后使用的模型 {model} · 更新于 {time}",
   "sessionSidebar.worktreesLoading": "工作树...",
   "sessionSidebar.worktreesLoadingTitle": "正在检查此目录的工作树。",
   "sessionSidebar.import": "导入会话",

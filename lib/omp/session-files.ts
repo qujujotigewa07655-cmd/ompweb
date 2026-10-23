@@ -648,6 +648,20 @@ export interface OmpSessionInfo {
 const SESSION_LIST_PREFIX_BYTES = 4096;
 const SESSION_LIST_SUFFIX_BYTES = 32_768;
 
+/**
+ * Characters of the first user message the session list keeps. The list sends
+ * `firstMessage` for every session and the sidebar renders at most 50
+ * characters of it, so a 12 KB memory preamble costs the whole payload: a
+ * measured 1.07 MB response of which 669 KB was preview text. A cap keeps list
+ * searches over the preview working without shipping the preamble.
+ */
+const SESSION_LIST_PREVIEW_CHARS = 200;
+
+function previewFirstMessage(text: string): string {
+  if (text.length <= SESSION_LIST_PREVIEW_CHARS) return text;
+  return `${text.slice(0, SESSION_LIST_PREVIEW_CHARS).trimEnd()}…`;
+}
+
 function decodeJsonStringFragment(value: string): string {
   const safeValue = value.endsWith("\\") ? value.slice(0, -1) : value;
   try {
@@ -953,7 +967,7 @@ export function scanSessionInfo(filePath: string, withStatus = true): OmpSession
       modified: mtime,
       messageCount,
       size,
-      firstMessage: firstMessage || "(no messages)",
+      firstMessage: previewFirstMessage(firstMessage) || "(no messages)",
       status: withStatus ? deriveSessionStatus(suffix) : undefined,
     };
   } catch {

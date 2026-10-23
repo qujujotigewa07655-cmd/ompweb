@@ -5,6 +5,7 @@ import { startRpcSession, getRpcSession, resolveSpawnCwdResult, WebRpcError } fr
 import { RpcCommandError } from "@/lib/omp/rpc-process";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { MAX_AGENT_COMMAND_REQUEST_BYTES } from "@/lib/image-attachments";
+import { indicatorState, stateWithoutSystemPrompt } from "@/lib/agent-state-shape";
 
 // Commands that ride whatever child is alive and never spawn or replace one:
 // keystroke predictions, and the side-question reads/cancel omp-web sends in
@@ -99,27 +100,17 @@ export async function POST(
   }
 }
 
-// The fields the per-second indicator polls read (token gauge, shell watchdog).
-// A full state snapshot carries the joined system prompt, which those polls ask
-// for every two seconds and never use.
-const INDICATOR_FIELDS = [
-  "isStreaming", "isPromptRunning", "isBashRunning", "isCompacting", "tokensPerSecond", "usageLimit",
-] as const;
-
-function indicatorState(state: unknown): Record<string, unknown> {
-  const source = (state ?? {}) as Record<string, unknown>;
-  const picked: Record<string, unknown> = {};
-  for (const field of INDICATOR_FIELDS) if (source[field] !== undefined) picked[field] = source[field];
-  return picked;
-}
-
-// GET /api/agent/[id] - Get current agent state (?light=1: indicator fields only)
+// GET /api/agent/[id] - Get current agent state
+//   ?light=1       — indicator fields only (2 s gauge, shell watchdog)
+//   ?omitPrompt=1  — full state without the joined system prompt (polled paths)
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const light = new URL(req.url).searchParams.get("light") === "1";
+  const search = new URL(req.url).searchParams;
+  const light = search.get("light") === "1";
+  const omitPrompt = search.get("omitPrompt") === "1";
 
   try {
     const session = getRpcSession(id);
@@ -128,7 +119,10 @@ export async function GET(
     }
     try {
       const state = await session.send({ type: "get_state" });
-      return NextResponse.json({ running: true, state: light ? indicatorState(state) : state });
+      return NextResponse.json({
+        running: true,
+        state: light ? indicatorState(state) : omitPrompt ? stateWithoutSystemPrompt(state) : state,
+      });
     } catch (error) {
       if (error instanceof WebRpcError && error.code === "session_unresponsive") {
         return NextResponse.json({ running: false, recovered: true });

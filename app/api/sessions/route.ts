@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { listAllSessions } from "@/lib/session-reader";
 import { getRunningRpcSessions } from "@/lib/rpc-manager";
+import { jsonBodyResponse } from "@/lib/api-utils";
 
 // The session list mixes on-disk sessions with the live runningSessionIds set,
 // which changes on every agent turn, so it must never be cached by proxies or
@@ -24,7 +25,7 @@ export async function GET(req: Request) {
     if (req.headers.get("if-none-match") === etag) {
       return new NextResponse(null, { status: 304, headers: { ETag: etag, ...SESSION_LIST_HEADERS } });
     }
-    return new NextResponse(bodyJson, { headers: { ETag: etag, "Content-Type": "application/json", ...SESSION_LIST_HEADERS } });
+    return jsonBodyResponse(bodyJson, req, { headers: { ETag: etag, ...SESSION_LIST_HEADERS } });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error), code: "internal_error" },

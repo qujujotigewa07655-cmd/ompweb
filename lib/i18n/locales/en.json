@@ -1188,6 +1188,8 @@
   "sessionSidebar.uploadFiles": "Upload files",
   "sessionSidebar.uploadFilesTitle": "Upload files to project root",
   "sessionSidebar.worktreeTitle": "Worktree: {path}",
+  "sessionSidebar.costTitle": "Session cost ${cost} · updated {time}",
+  "sessionSidebar.costModelTitle": "Session cost ${cost} · last model {model} · updated {time}",
   "sessionSidebar.worktreesLoading": "Worktrees...",
   "sessionSidebar.worktreesLoadingTitle": "Checking worktrees for this directory.",
   "sessionSidebar.import": "Import session",
