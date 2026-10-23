@@ -11,7 +11,7 @@ import { ClickableImage } from "./ImageLightbox";
 import { translate, useI18n, type Locale } from "@/lib/i18n";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { isEmptyThinkingBlock } from "@/lib/message-display";
-import { isPassiveToolContext } from "@/lib/chat-transcript-plan";
+import { isPassiveToolContext, SESSION_EVENT_PREFIX } from "@/lib/chat-transcript-plan";
 import { Tooltip, Collapsible, CollapsibleTrigger } from "./ui/primitives";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 import { formatCompactNumber } from "@/lib/format";
@@ -92,6 +92,14 @@ const USER_BUBBLE_MAX_HEIGHT = 300;
 
 function formatMessageSize(chars: number): string {
   return chars >= 1_000_000 ? `${(chars / 1_000_000).toFixed(1)} MB` : `${Math.round(chars / 1_000)} KB`;
+}
+
+// Keep routine replies quiet; this is model latency, not wall time including tools.
+const MODEL_DURATION_MIN_MS = 30_000;
+
+/** Milliseconds from omp's transcript record → `12.4s` / `0.9s`. */
+function formatSeconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 export function SafeMarkdownBody({ children, className, ...props }: ComponentProps<typeof MarkdownBody>) {
@@ -230,6 +238,9 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     }
     if (custom.customType === "compaction") {
       return <CompactionMessageView message={custom} />;
+    }
+    if (custom.customType.startsWith(SESSION_EVENT_PREFIX)) {
+      return <SessionEventDivider message={custom} />;
     }
     if (custom.display === false) {
       return <HiddenExtensionView message={custom} cwd={cwd} onOpenFile={onOpenFile} />;
@@ -665,6 +676,17 @@ function AssistantMessageView({
       >
         {message.provider && (
           <span>{modelNames?.[`${message.provider}:${message.model}`] ?? modelNames?.[message.model] ?? message.model}</span>
+        )}
+        {!isStreaming && message.duration != null && message.duration >= MODEL_DURATION_MIN_MS && (
+          <span
+            // The duration excludes tool execution; label it explicitly.
+            style={{ whiteSpace: "nowrap" }}
+            title={`${t("messageView.turnDuration")}: ${Math.round(message.duration)} ms`
+              + (message.ttft != null ? ` · ${t("messageView.turnTtft")}: ${Math.round(message.ttft)} ms` : "")}
+          >
+            {t("messageView.turnDuration")}: {formatSeconds(message.duration)}
+            {message.ttft != null && ` · ${t("messageView.turnTtft")} ${formatSeconds(message.ttft)}`}
+          </span>
         )}
         {isStreaming && (() => {
           let chars = 0;
@@ -1295,6 +1317,60 @@ function CompactionMessageView({ message }: { message: CustomMessage }) {
     </div>
   );
 }
+/**
+ * A model / thinking-level / mode / service-tier change or a context reset,
+ * rendered as a thin separator between turns rather than a message card.
+ *
+ * The label comes from `details` through i18n, not from `content`: the reader
+ * ships one stable English line for search and copy, while the UI must speak
+ * the user's language. `content` stays as the fallback when a kind has no
+ * template yet.
+ */
+function SessionEventDivider({ message }: { message: CustomMessage }) {
+  const { t, locale } = useI18n();
+  const time = formatTime(message.timestamp, locale);
+  const details = (message.details ?? {}) as Record<string, unknown>;
+  const kind = message.customType.slice(SESSION_EVENT_PREFIX.length);
+  const value = (key: string) => (typeof details[key] === "string" ? details[key] as string : undefined);
+  let label: string;
+  switch (kind) {
+    case "model": {
+      const modelName = value("model") ?? "";
+      const role = value("role");
+      const shown = modelName ? modelName : (getMessageText(message.content) || modelName);
+      label = role ? `${t("sessionEvent.model", { value: shown })} (${role})` : t("sessionEvent.model", { value: shown });
+      break;
+    }
+    case "thinking":
+      label = t("sessionEvent.thinking", { value: value("thinkingLevel") ?? value("configured") ?? "" });
+      break;
+    case "mode":
+      label = t("sessionEvent.mode", { value: value("mode") ?? "" });
+      break;
+    case "tier":
+      label = t("sessionEvent.tier", { value: String(details.serviceTier ?? "") });
+      break;
+    case "reset":
+      label = t("sessionEvent.reset");
+      break;
+    default:
+      label = getMessageText(message.content);
+  }
+
+  return (
+    <div
+      style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 0", color: "var(--text-dim)" }}
+    >
+      <span style={{ flex: 1, height: 1, background: "var(--border)" }} aria-hidden="true" />
+      <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, whiteSpace: "nowrap" }} title={time ?? undefined}>
+        <CircleSlash size={11} strokeWidth={2} aria-hidden="true" />
+        {label}
+      </span>
+      <span style={{ flex: 1, height: 1, background: "var(--border)" }} aria-hidden="true" />
+    </div>
+  );
+}
+
 function CompactionFileMetadata({ readFiles, modifiedFiles }: { readFiles: string[]; modifiedFiles: string[] }) {
   const { t } = useI18n();
   const total = readFiles.length + modifiedFiles.length;

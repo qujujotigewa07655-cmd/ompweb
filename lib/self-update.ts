@@ -56,9 +56,14 @@ export class SelfUpdateError extends Error {
 
 type Kind = "app" | "omp";
 
-function assertUpdatesEnabled(): void {
-  if (!isUpdateDisabled()) return;
-  throw new SelfUpdateError("updates_disabled", `Updates are disabled by ${DISABLE_AUTOUPDATE_ENV_VAR}`, 403);
+function assertUpdatesEnabled(kind: Kind): void {
+  if (isUpdateDisabled()) {
+    throw new SelfUpdateError("updates_disabled", `Updates are disabled by ${DISABLE_AUTOUPDATE_ENV_VAR}`, 403);
+  }
+  if (kind === "app") {
+    const support = getSelfUpdateSupport();
+    if (!support.supported) throw new SelfUpdateError("self_update_unsupported", support.reason ?? "Application self-update is unsupported", 403);
+  }
 }
 
 export function resolveSelfUpdateTempRoot(
@@ -285,9 +290,14 @@ export function getSelfUpdateSupport(): { supported: boolean; reason?: string; p
   if (isUpdateDisabled()) {
     return { supported: false, reason: `Updates are disabled by ${DISABLE_AUTOUPDATE_ENV_VAR}`, packageDir };
   }
-  // simplified: always supported if packageDir exists
   try {
     if (!existsSync(packageDir)) return { supported: false, reason: "package dir not found", packageDir };
+    const pkg: unknown = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+    if (!pkg || typeof pkg !== "object" || Array.isArray(pkg) ||
+      !("name" in pkg) || pkg.name !== "@kahme247/ompweb" ||
+      ("private" in pkg && pkg.private !== false)) {
+      return { supported: false, reason: "Automatic app updates are unavailable for private or non-upstream packages", packageDir };
+    }
     return { supported: true, packageDir: resolve(packageDir) };
   } catch {
     return { supported: false, reason: "unsupported", packageDir };
@@ -301,7 +311,7 @@ function detectManager(packageDir: string): { manager: "npm" | "bun"; managerPat
 }
 
 export async function prepareSelfUpdate(kind: Kind = "app"): Promise<PrepareResult> {
-  assertUpdatesEnabled();
+  assertUpdatesEnabled(kind);
   cleanupStaleSelfUpdate(Date.now(), kind);
   ensureSecureRoot(kind, true);
   const leaseFile = leasePath(kind);
@@ -364,7 +374,7 @@ export async function prepareSelfUpdate(kind: Kind = "app"): Promise<PrepareResu
 }
 
 export function validateCommitSelfUpdate(attemptId: string, kind: Kind = "app"): "ready" | "replay" {
-  assertUpdatesEnabled();
+  assertUpdatesEnabled(kind);
   const status = readStateJson<StoredStatus>(statusPath(kind));
   if (!status || status.attemptId !== attemptId) throw new SelfUpdateError("attempt_not_found", "Update attempt not found", 404);
   if (status.state === "running") return "replay";
@@ -375,6 +385,7 @@ export function validateCommitSelfUpdate(attemptId: string, kind: Kind = "app"):
   return "ready";
 }
 export function markSelfUpdateStopping(attemptId: string, kind: Kind = "app"): void {
+  assertUpdatesEnabled(kind);
   const status = readStateJson<StoredStatus>(statusPath(kind));
   if (!status || status.attemptId !== attemptId) return;
   const next: StoredStatus = { ...status, state: "running", stage: "stopping", startedAt: new Date().toISOString() };
@@ -382,6 +393,7 @@ export function markSelfUpdateStopping(attemptId: string, kind: Kind = "app"): v
 }
 
 export async function armSelfUpdateLauncher(attemptId: string, kind: Kind = "app"): Promise<void> {
+  assertUpdatesEnabled(kind);
   const armed = markerPath(attemptId, "armed.json", kind);
   atomicWrite(armed, JSON.stringify({ attemptId, armedAt: new Date().toISOString(), protocol: 1 }));
   // settle
@@ -389,7 +401,7 @@ export async function armSelfUpdateLauncher(attemptId: string, kind: Kind = "app
 }
 
 export function commitSelfUpdate(attemptId: string, kind: Kind = "app"): { accepted: true; attemptId: string } {
-  assertUpdatesEnabled();
+  assertUpdatesEnabled(kind);
   const status = readStateJson<StoredStatus>(statusPath(kind));
   if (!status || status.attemptId !== attemptId) throw new SelfUpdateError("attempt_not_found", "Update attempt not found", 404);
   // write go marker
@@ -432,6 +444,7 @@ export function commitSelfUpdate(attemptId: string, kind: Kind = "app"): { accep
     String(process.env.OMP_WEB_LAUNCHER_PID ?? process.pid),
     "--server-pid",
     String(process.pid),
+    "--descriptor",
     JSON.stringify(descriptor),
     "--manager-prefix",
     JSON.stringify(prefix),
@@ -464,6 +477,7 @@ export function commitSelfUpdate(attemptId: string, kind: Kind = "app"): { accep
 }
 
 export async function abortPreparedSelfUpdate(attemptId: string, reason: string, kind: Kind = "app"): Promise<void> {
+  assertUpdatesEnabled(kind);
   try {
     atomicWrite(markerPath(attemptId, "abort.json", kind), JSON.stringify({ attemptId, reason, protocol: 1 }));
   } catch {}

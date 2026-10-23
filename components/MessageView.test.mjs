@@ -12,7 +12,8 @@ const jiti = createJiti(import.meta.url, {
 });
 const { MessageView, SafeMarkdownBody, TaskResultPanel, isInterruptedMessage } = await jiti.import("./MessageView.tsx");
 const { CodeBlock } = await jiti.import("./MermaidBlock.tsx");
-const { buildSessionContext } = await jiti.import("../lib/session-reader.ts");
+const sessionReaderModule = await jiti.import("../lib/session-reader.ts");
+const { buildSessionContext } = sessionReaderModule;
 const { collectToolResults, planTranscriptRows } = await jiti.import("../lib/chat-transcript-plan.ts");
 afterEach(cleanup);
 
@@ -917,6 +918,23 @@ test("agent replies without text still offer the new-session action", () => {
   assert.match(html, new RegExp(`aria-label="${FORK_LABEL}"`));
 });
 
+test("completed replies show model timing from 30 seconds without adding timing to short or streaming replies", () => {
+  const html = (timing, isStreaming = false) => renderToStaticMarkup(React.createElement(MessageView, {
+    message: { role: "assistant", model: "test", provider: "test", content: [{ type: "text", text: "Done." }], ...timing },
+    isStreaming,
+  }));
+
+  const slow = html({ duration: 32400, ttft: 2100 });
+  assert.match(slow, /32\.4s/);
+  assert.match(slow, /2\.1s/);
+  assert.match(slow, /32400 ms/);
+  assert.match(slow, /2100 ms/);
+
+  assert.match(html({ duration: 30000, ttft: 2100 }), /30000 ms/);
+  assert.doesNotMatch(html({ duration: 29999, ttft: 2100 }), /29999 ms|2100 ms/);
+  assert.doesNotMatch(html({ duration: 32400, ttft: 2100 }, true), /32400 ms|2100 ms/);
+});
+
 test("a streaming reply and an unforkable row keep no fork action", () => {
   const reply = { role: "assistant", model: "test", provider: "test", content: [{ type: "text", text: "Streaming" }] };
   const streaming = renderToStaticMarkup(React.createElement(MessageView, {
@@ -949,4 +967,35 @@ test("user messages fork at their own entry and edit the prompt", async (t) => {
   await act(async () => { fireEvent.click(view.getByRole("button", { name: FORK_LABEL })); });
   assert.deepEqual(forked, [["user-7", true]]);
   view.unmount();
+});
+
+test("session metadata renders as a divider, translated from details rather than the English content line", () => {
+  const html = renderToStaticMarkup(React.createElement(MessageView, {
+    message: {
+      role: "custom",
+      customType: "session-event:model",
+      content: "Model → anthropic/claude-opus-4-8",
+      display: true,
+      details: { model: "anthropic/claude-opus-4-8" },
+      timestamp: 1_700_000_000_000,
+    },
+  }));
+  // The label is built from details + the i18n template, not echoed from
+  // content, so a non-English locale still reads correctly.
+  assert.match(html, /Model → anthropic\/claude-opus-4-8/);
+  // A divider, not a message card: no copy affordances, no markdown body.
+  assert.doesNotMatch(html, /markdown-body/);
+});
+
+test("a cleared service tier and an empty thinking level never reach the transcript", () => {
+  const { buildSessionContext: buildContext } = sessionReaderModule;
+  const entries = [
+    { type: "session", version: 3, id: "s", cwd: "/tmp", timestamp: "2026-01-01T00:00:00.000Z" },
+    { type: "service_tier_change", id: "t1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", serviceTier: null },
+    { type: "thinking_level_change", id: "th1", parentId: null, timestamp: "2026-01-01T00:00:02.000Z", thinkingLevel: null },
+    { type: "reset_boundary", id: "r1", parentId: null, timestamp: "2026-01-01T00:00:03.000Z" },
+  ];
+  const context = buildContext(entries);
+  const types = context.messages.map((m) => (m.role === "custom" ? m.customType : m.role));
+  assert.deepEqual(types, ["session-event:reset"]);
 });

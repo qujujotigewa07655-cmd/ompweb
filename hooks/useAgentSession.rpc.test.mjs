@@ -730,11 +730,13 @@ test("an older state response cannot overwrite a newer snapshot that arrived fir
   const { w, es } = await startRun("queue-seq", "run");
   let releaseOlder;
   world.holds.push({
-    match: (method, url) => method === "GET" && url === "/api/agent/queue-seq",
+    // The reconcile/state GETs ask with ?omitPrompt=1; the query is irrelevant here.
+    match: (method, url) => method === "GET" && url.startsWith("/api/agent/queue-seq"),
     produce: () => new Promise((resolve) => { releaseOlder = resolve; }),
   });
   world.holds.push({
-    match: (method, url) => method === "GET" && url === "/api/agent/queue-seq",
+    // The reconcile/state GETs ask with ?omitPrompt=1; the query is irrelevant here.
+    match: (method, url) => method === "GET" && url.startsWith("/api/agent/queue-seq"),
     produce: async () => ({ value: { running: true, state: { queuedMessages: { steering: ["pending"], followUp: [] } } } }),
   });
   await act(() => es.open()); // older snapshot request, held
@@ -819,7 +821,7 @@ test("a state snapshot older than a queue_update is dropped, and opening the str
   const { w, es } = await startRun("queue-order", "run");
   let release;
   world.holds.push({
-    match: (method, url) => method === "GET" && url === "/api/agent/queue-order",
+    match: (method, url) => method === "GET" && url.startsWith("/api/agent/queue-order"),
     produce: () => new Promise((resolve) => { release = resolve; }),
   });
   await act(() => es.open()); // reconnect: subscribe, then snapshot
@@ -1444,6 +1446,47 @@ test("tool output streams live before the toolResult message lands", async () =>
   });
   await settle();
   assert.equal(w.latest.liveToolResults.size, 0, "a finished run leaves no live tool state");
+});
+
+test("a completed tool stays visible across a busy snapshot until its saved result arrives", async () => {
+  resetWorld();
+  primeSession("s1", [userMsg("u0", "q")]);
+  const { w, es } = await startStreamingRun("s1");
+  const result = { role: "toolResult", toolCallId: "held-tool", toolName: "bash", content: [{ type: "text", text: "final visible output" }] };
+  await act(() => {
+    es.emit({ type: "tool_execution_start", toolCallId: result.toolCallId, toolName: "bash" });
+    es.emit({ type: "tool_execution_end", toolCallId: result.toolCallId, toolName: "bash", result });
+  });
+  assert.equal(w.latest.liveToolResults.get(result.toolCallId)?.content[0].text, "final visible output");
+  const snapshot = liveSnapshot("s1", world.streams.get("s1").sequence + 1, assistantMsg("a2", "still streaming"));
+  world.streams.set("s1", snapshot.cursor);
+  world.holds.push({
+    match: (method, url) => method === "GET" && url.startsWith("/api/sessions/s1/context?") && url.includes("sync=1"),
+    produce: async () => ({ value: syncSnapshot("s1", snapshot) }),
+  });
+  await act(() => { publishSessionsChanged(["s1"]); });
+  await until(() => w.latest.streamState.streamingMessage?.content[0].text === "still streaming", "the busy snapshot was applied");
+  assert.equal(w.latest.liveToolResults.get(result.toolCallId)?.content[0].text, "final visible output", "a missing snapshot entry is not a saved replacement");
+  await act(() => {
+    appendEntry("s1", result);
+    publishSessionsChanged(["s1"]);
+  });
+  await until(() => w.latest.messages.some(message => message.role === "toolResult" && message.toolCallId === result.toolCallId), "the saved result arrived");
+  assert.equal(w.latest.liveToolResults.has(result.toolCallId), false, "the saved result owns the handoff");
+});
+
+test("reconnecting clears a dialog cancelled elsewhere and replays any still-pending request", async () => {
+  resetWorld();
+  primeSession("dialog-reconnect", [userMsg("u0", "q")]);
+  const { w, es } = await startRun("dialog-reconnect", "ask me");
+  const request = { type: "extension_ui_request", id: "answered-elsewhere", method: "input", title: "Old question" };
+  await act(() => es.emit(request));
+  assert.equal(w.latest.extensionDialog?.id, request.id);
+  // The server no longer has this request, so reconnect does not replay it.
+  await act(() => es.open());
+  assert.equal(w.latest.extensionDialog, null);
+  await act(() => es.emit({ ...request, id: "still-pending", title: "Pending question" }));
+  assert.equal(w.latest.extensionDialog?.id, "still-pending");
 });
 
 test("late frames after the run finished are ignored (no ghost bubble, no double completion)", async () => {
@@ -3616,7 +3659,7 @@ test("a state snapshot requested before a newer skill update cannot overwrite it
 
   let release;
   world.holds.push({
-    match: (method, url) => method === "GET" && url === "/api/agent/skill-order",
+    match: (method, url) => method === "GET" && url.startsWith("/api/agent/skill-order"),
     produce: () => new Promise((resolve) => {
       release = () => resolve({ value: { running: true, state: { skillDiagnostics: skillDiagnosticsSnapshot(true, "stale-state") } } });
     }),

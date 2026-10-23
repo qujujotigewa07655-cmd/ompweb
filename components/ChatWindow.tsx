@@ -5,9 +5,9 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { ArrowDown, ChevronDown, ChevronUp, Layers, Paperclip, Square } from "lucide-react";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage } from "@/lib/types";
 import { translate, useI18n } from "@/lib/i18n";
-import { collectToolResults, isGroupAnchor, planTranscriptRows, type ActivityPiece, type TranscriptRow } from "@/lib/chat-transcript-plan";
+import { collectToolResults, isDuplicateSessionEvent, isVisibleGroupAnchor, planTranscriptRows, type ActivityPiece, type TranscriptRow } from "@/lib/chat-transcript-plan";
 import { resolveForkTargets } from "@/lib/chat-fork";
-import { MessageView } from "./MessageView";
+import { isInterruptedMessage, MessageView } from "./MessageView";
 import { FullTextSearchPreview } from "./FullTextSearchPreview";
 import { clearSearchMessageTarget, getSearchMessageTarget, SEARCH_MESSAGE_EVENT, type SearchMessageTarget } from "@/lib/full-text-search-navigation";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
@@ -412,6 +412,7 @@ const CommittedTranscript = memo(function CommittedTranscript({
       // Live tail: render the running turn flat so streaming updates and tool
       // progress stay in view; it folds once the run ends.
       for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
+        if (isDuplicateSessionEvent(messages[renderIdx - 1], messages[renderIdx])) continue;
         rendered.push(renderMessage(renderIdx));
       }
       continue;
@@ -501,7 +502,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
   }, [chatInputRef]);
 
   const {
-    loading, error, messages, entryIds, showPreCompactionHistory, streamState,
+    data, activeLeafId, loading, error, messages, entryIds, showPreCompactionHistory, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelsLoading, modelError, modelThinkingLevels, modelThinkingLevelMaps, thinkingLevel, fastModeEnabled, fastModeActive, slowModeSupported, slowModeEnabled, slowModeScope, usageLimit,
     externalRunActive,
     ompUiWritable, canSubmitOmpUiAction,
@@ -894,15 +895,27 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     const toolResultsMap = collectToolResults(messages);
     let lastAnchorIdx = -1;
     let hasCompaction = false;
+    let latestAssistant: AssistantMessage | undefined;
+    let hasUser = false;
     const visibleRefIndexByMessage = new Map<number, number>();
     let refIdx = 0;
 
-    messages.forEach((message, index) => {
+    for (let index = 0; index < messages.length; index++) {
+      const message = messages[index];
+      if (message.role === "user") {
+        hasUser = true;
+        latestAssistant = undefined;
+      } else if (hasUser && message.role === "assistant") {
+        latestAssistant = message;
+      }
       if (message.role === "custom" && message.customType === "compaction") hasCompaction = true;
-      if (isGroupAnchor(message)) lastAnchorIdx = index;
+      if (isVisibleGroupAnchor(messages, index)) lastAnchorIdx = index;
       if (message.role === "user" || message.role === "assistant") visibleRefIndexByMessage.set(index, refIdx++);
-    });
-    return { toolResultsMap, lastAnchorIdx, hasCompaction, visibleRefIndexByMessage };
+    }
+    const latestAssistantFailed = !!latestAssistant
+      && !isInterruptedMessage(latestAssistant.errorMessage, latestAssistant.stopReason)
+      && (!!latestAssistant.errorMessage?.trim() || latestAssistant.stopReason === "error");
+    return { toolResultsMap, lastAnchorIdx, hasCompaction, visibleRefIndexByMessage, latestAssistantFailed };
   }, [messages]);
   // Runtime tool results span committed messages plus the tool calls omp is
   // still executing. A committed result always wins; the live snapshot only
@@ -925,29 +938,6 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
   // what conversationMeta's visibleRefIndexByMessage already tallies, so no
   // separate filter pass (which would re-run on every streaming frame).
   const messageRefs = useMessageRefs(conversationMeta.visibleRefIndexByMessage.size);
-  // Tool-call ids already rendered by COMMITTED messages — memoized away from
-  // the streaming path so a per-token update only re-scans the live bubble.
-  const committedToolCallIds = useMemo(() => {
-    const renderedIds = new Set<string>();
-    for (const message of messages) {
-      if (message?.role !== "assistant") continue;
-      for (const block of (message as Partial<AssistantMessage>).content ?? []) {
-        if (block.type === "toolCall") renderedIds.add(block.toolCallId);
-      }
-    }
-    return renderedIds;
-  }, [messages]);
-  const pendingToolHeaders = useMemo(() => {
-    if (agentPhase?.kind !== "running_tools") return [];
-    const renderedIds = new Set(committedToolCallIds);
-    const streaming = streamState.streamingMessage;
-    if (streaming?.role === "assistant") {
-      for (const block of (streaming as Partial<AssistantMessage>).content ?? []) {
-        if (block.type === "toolCall") renderedIds.add(block.toolCallId);
-      }
-    }
-    return agentPhase.tools.filter((tool) => !renderedIds.has(tool.id));
-  }, [agentPhase, committedToolCallIds, streamState.streamingMessage]);
 
   // Reset minimized state on session switch (session-scoped)
   useEffect(() => { setComposerMinimized(false); }, [sessionKeyForPaging]);
@@ -1052,7 +1042,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     if (bashRunning && !pendingBash) {
       return t("chatWindow.runningCommand");
     }
-    if (isCompacting || (agentRunning && !streamState.streamingMessage && pendingToolHeaders.length === 0)) {
+    if (isCompacting || (agentRunning && !streamState.streamingMessage)) {
       return [
         phaseLabel(agentPhase),
         activeSubagentCount > 0 ? tn("chatWindow.subagentCount", activeSubagentCount) : null,
@@ -1067,9 +1057,14 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
       ].filter(Boolean).join(" · ");
     }
     return null;
-  }, [bashRunning, pendingBash, isCompacting, agentRunning, streamState.streamingMessage, pendingToolHeaders.length, agentPhase, activeSubagentCount, currentTodoPhase, t, tn]);
+  }, [bashRunning, pendingBash, isCompacting, agentRunning, streamState.streamingMessage, agentPhase, activeSubagentCount, currentTodoPhase, t, tn]);
 
   const askOpen = extensionDialog?.method === "ask";
+  const isHistoricalView = showPreCompactionHistory || (activeLeafId !== null && activeLeafId !== data?.leafId);
+  const isActiveConversationView = !!session && !isNew && !isHistoricalView && !searchTarget && !loading && !error;
+  const canChooseRecoveryModel = isActiveConversationView && conversationMeta.latestAssistantFailed
+    && !!chatInputRef && !sessionBusy && !externalRunActive && !isCompacting
+    && !streamState.isStreaming && !streamState.streamingMessage && !askOpen;
   const hiddenComposerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // A hidden composer that keeps focus keeps the phone keyboard up: the
@@ -1371,6 +1366,28 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
               sentinelRef={sentinelRef}
               handleLoadMoreClick={handleLoadMoreClick}
             />
+            {canChooseRecoveryModel && (
+              <div style={{ margin: "4px 0 12px", display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, color: "var(--text-muted)", fontSize: 12 }}>
+                <span>{t("chatWindow.modelRecovery")}</span>
+                <button
+                  type="button"
+                  className="ui-focus-ring"
+                  onClick={() => {
+                    if (!canChooseRecoveryModel || !chatInputRef?.current) return;
+                    setComposerMinimized(false);
+                    chatInputRef.current.openModelPicker();
+                  }}
+                  style={{ minHeight: 28, padding: "4px 8px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--text)", cursor: "pointer" }}
+                >
+                  {t("chatWindow.chooseModel")}
+                </button>
+              </div>
+            )}
+            {isActiveConversationView && externalRunActive && !sessionBusy && !isCompacting && !streamState.isStreaming && !streamState.streamingMessage && (
+              <div role="status" style={{ margin: "4px 0 12px", color: "var(--text-muted)", fontSize: 12 }}>
+                {t("chatWindow.externalRunStatus")}
+              </div>
+            )}
             {/* Also while held: a finished reply stays until its saved row
                 replaces it in the same render (useAgentSession-stream). */}
             {streamState.streamingMessage && (
@@ -1390,24 +1407,6 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
               />
             )}
 
-            {toolCallsDefaultCollapsed && pendingToolHeaders.map((tool) => (
-              <div
-                key={tool.id}
-                role="status"
-                aria-label={t("chatWindow.runningNamed", { names: tool.name })}
-                style={{
-                  display: "flex", alignItems: "center", gap: 7,
-                  marginBottom: 8, padding: "6px 10px",
-                  border: "1px solid color-mix(in srgb, var(--status-success) 25%, transparent)",
-                  borderRadius: "var(--radius-control)",
-                  background: "color-mix(in srgb, var(--status-success) 4%, transparent)",
-                  color: "var(--text-muted)", fontSize: 12,
-                }}
-              >
-                <span aria-hidden className="live-status-dot live-pulse inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-                <span style={{ color: "var(--status-success)", fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: 11 }}>{tool.name}</span>
-              </div>
-            ))}
 
 
             {pendingBash && (

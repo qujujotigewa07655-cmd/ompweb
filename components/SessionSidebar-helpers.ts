@@ -181,19 +181,6 @@ function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
 }
 const MAX_PROJECT_SESSIONS = 5;
 
-/**
- * Compact USD for a session row: two significant places under a dollar, whole
- * dollars above it. Returns null for zero/absent cost so a free or unpriced
- * session shows nothing rather than "$0.00" (unpriced rows are a real data
- * gap, not a free session).
- */
-function formatSessionCost(costUsd: number | undefined): string | null {
-  if (costUsd == null || !Number.isFinite(costUsd) || costUsd <= 0) return null;
-  if (costUsd < 10) return `$${costUsd.toFixed(2)}`;
-  if (costUsd < 100) return `$${costUsd.toFixed(1)}`;
-  return `$${Math.round(costUsd)}`;
-}
-
 export {
   EMPTY_PROJECT_SET,
   EXPANDED_PROJECTS_STORAGE_KEY,
@@ -204,7 +191,6 @@ export {
   buildSessionTree,
   displayCwd,
   formatRelativeTime,
-  formatSessionCost,
   loadExpandedProjects,
   loadUnreadSessionIds,
   normalizeProjectKey,

@@ -515,7 +515,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const setToolPresetState = opts.setToolPreset ?? setToolPreset;
 
-  const currentModel = currentModelOverride ?? data?.context.model ?? pendingModel ?? null;
+  const savedModel = data?.context.model;
+  const currentModel = currentModelOverride ?? savedModel ?? pendingModel ?? null;
   // For existing sessions, the live state's resolved model wins over the
   // session file's entry: omp may have fallen back to the default model when
   // the recorded one is gone (disabled provider, renamed id), and the file
@@ -529,8 +530,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         ? (newSessionModel ?? newSessionDefaultModel)
         : (currentModelOverride ?? (liveModelMeta
             ? { provider: liveModelMeta.provider, modelId: liveModelMeta.modelId }
-            : data?.context.model ?? pendingModel)),
-    [isNew, newSessionModel, newSessionDefaultModel, currentModelOverride, liveModelMeta, data?.context.model, pendingModel],
+            : savedModel ?? pendingModel)),
+    [isNew, newSessionModel, newSessionDefaultModel, currentModelOverride, liveModelMeta, savedModel, pendingModel],
   );
 
   // Without live omp state (new or idle session), predict omp's own answer
@@ -604,15 +605,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // First phase that still has unfinished work; null once everything is done
   // (or no todo list exists), which hides the status-line suffix.
   const currentTodoPhase = useMemo(() => {
-    for (let index = 0; index < todoPhases.length; index++) {
-      const phase = todoPhases[index];
-      const tasks = Array.isArray(phase?.tasks) ? phase.tasks : [];
-      const done = tasks.filter((task) => task.status === "completed").length;
-      if (tasks.some((task) => task.status === "pending" || task.status === "in_progress")) {
-        return { name: phase.name, index: index + 1, phaseCount: todoPhases.length, done, total: tasks.length };
-      }
-    }
-    return null;
+    const index = todoPhases.findIndex((phase) =>
+      Array.isArray(phase?.tasks) && phase.tasks.some((task) => task.status === "pending" || task.status === "in_progress"));
+    if (index < 0) return null;
+    const phase = todoPhases[index];
+    const tasks = phase.tasks;
+    const done = tasks.reduce((count, task) => count + (task.status === "completed" ? 1 : 0), 0);
+    return { name: phase.name, index: index + 1, phaseCount: todoPhases.length, done, total: tasks.length };
   }, [todoPhases]);
   // Load the per-session advisor choice on session switch; brand-new chats
   // start disabled until the user toggles the composer icon.
@@ -1167,6 +1166,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // resets retry backoff and catches up the persisted transcript.
       es.onopen = () => {
         if (eventSourceRef.current !== es || sessionIdRef.current !== sid) return;
+        clearTimeout(extensionDialogClearTimerRef.current ?? undefined);
+        extensionDialogClearTimerRef.current = null;
+        locallyAnsweredDialogRef.current = null;
+        setExtensionDialog(null);
         setOmpUiConnectedSessionId(sid);
         eventStreamRetryMsRef.current = EVENT_STREAM_RETRY_MIN_MS;
         settle("connected");
@@ -1732,7 +1735,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // agent_end never arrives and the UI stays in streaming state forever.
   // If the server reports idle while we still think it's running, finish
   // through the same path as prompt_done.
-  const reconcileAgentState = useCallback(async (sid: string) => {
+  const reconcileAgentState = useCallback(async function reconcileState(sid: string) {
     if (!agentRunningRef.current) return;
     const runId = promptRunIdRef.current;
     const responseVersion = responseRunVersionRef.current;
@@ -1793,7 +1796,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // release() is a no-op — it must not clear the new run's lock.
       const reissue = guard.release(token);
       if (reissue && agentRunningRef.current && promptRunIdRef.current === runId && sessionIdRef.current === sid) {
-        void reconcileAgentState(sid);
+        void reconcileState(sid);
       }
     }
   }, [applyQueueStateSnapshot, applySkillDiagnosticsSnapshot, finishPromptWithoutStream, refreshSubagentRoster]);
@@ -1848,7 +1851,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // Wall-clock of the last transcript change; bounds the poll so a permanently
   // "awaiting a tool result" tail (crashed foreign omp, interrupted run) does
   // not re-read the session file forever.
-  const transcriptChangedAtRef = useRef(Date.now());
+  const transcriptChangedAtRef = useRef(0);
   useEffect(() => {
     transcriptChangedAtRef.current = Date.now();
   }, [messages]);
@@ -2640,7 +2643,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       if (fields.tools) {
         const preserve = fields.tools;
-        setLiveToolResults((current) => new Map([...current].filter(([id]) => preserve.has(id))));
+        setLiveToolResults((current) => new Map([...current].filter(([id, result]) => !result.partial || preserve.has(id))));
         setAgentPhase((current) => {
           const tools = current?.kind === "running_tools" ? current.tools.filter(({ id }) => preserve.has(id)) : [];
           return tools.length ? { kind: "running_tools", tools } : agentRunningRef.current ? { kind: "waiting_model" } : null;
@@ -3389,10 +3392,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [isCompacting, loadSession, refreshLiveModelState]);
 
+  const modelCwd = newSessionCwd ?? session?.cwd ?? "";
   const loadModels = useCallback(async (signal?: AbortSignal) => {
     setModelsLoading(true);
     try {
-      const modelCwd = newSessionCwd ?? session?.cwd ?? "";
       const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
       const res = await fetch(modelsUrl, { cache: "no-store", ...(signal ? { signal } : {}) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -3418,7 +3421,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       setModelsLoading(false);
     }
-  }, [isNew, newSessionCwd, session?.cwd]);
+  }, [isNew, modelCwd]);
 
   /** Ask a side question, or a follow-up in `recordId`'s topic. It runs beside
    * any main turn and never enters the transcript. False = refused (toasted),

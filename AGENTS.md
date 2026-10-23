@@ -534,11 +534,6 @@ during the wait.
     rendered pages and middleware, not App Router handlers, so
     `jsonBodyResponse()` (`lib/api-utils.ts`) gzips when the client accepts it.
     1.07 MB → 447 KB raw → 103 KB on the wire.
-- The response is also annotated with `costUsd` / `tokens` / `lastModel` from
-  `getSessionUsageTotals()` (`lib/usage-db.ts`): one grouped read over
-  `usage.db` sharing the report's duplicate-row filter. It must stay
-  failure-tolerant — an unreadable usage database costs the annotation, never
-  the list.
 
 ### Session read races are 409, not 500
 - omp appends to a session file while omp-web reads it. `SessionChangedError`

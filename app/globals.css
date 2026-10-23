@@ -1610,16 +1610,6 @@ html[data-touch-targets="accessible"] :is(.image-lightbox-stepper button, .image
 .session-item-time {
   width: 42px;
 }
-.session-item-cost {
-  /* Shares the timestamp slot: a 190 px sidebar cannot hold a title, a price
-     and a timestamp on one line, so the row shows the price when it has one
-     and the tooltip carries both. */
-  width: 42px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
-}
 .session-item-menu-button {
   width: 24px;
   height: 24px;

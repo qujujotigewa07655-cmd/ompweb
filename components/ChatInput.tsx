@@ -246,6 +246,7 @@ export interface ChatInputHandle {
   prependText: (text: string) => void;
   addFiles: (files: File[]) => void;
   openContextPanel: () => void;
+  openModelPicker: () => void;
 }
 const COMPOSITION_END_ENTER_GRACE_MS = 100;
 
@@ -541,9 +542,13 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     openContextPanel() {
       setContextOpen(true);
     },
+    openModelPicker() {
+      if (modelSelectorDisabled || !onModelChange || !(modelOptions.length > 0 || currentName || modelError || showModelsLoading)) return;
+      setModelDropdownOpen(true);
+    },
   }));
 
-  const processFiles = useCallback(async (files: File[]) => {
+  const processFiles = async (files: File[]) => {
     if (!files.length) return;
     const work = attachmentWorkRef.current;
     const used = attachedImagesRef.current.length + attachedTextFilesRef.current.length + work.count;
@@ -557,12 +562,14 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     let reservedText = 0;
     let reservedImages = 0;
     for (const file of files) {
-      const imageMime = file.type.startsWith("image/") ? file.type : getImageMime(file.name);
+      const extensionMime = getImageMime(file.name);
+      const isSvg = extensionMime === "image/svg+xml" || file.type === "image/svg+xml";
+      const imageMime = isSvg ? null : file.type.startsWith("image/") ? file.type : extensionMime;
       if (imageMime && imageBytes + file.size <= MAX_TOTAL_ATTACHED_IMAGE_BYTES) {
         inlineImages.push({ file, mimeType: imageMime });
         imageBytes += file.size;
         reservedImages += file.size;
-      } else if (!imageMime && isTextAttachmentFile(file) && textBytes + file.size <= MAX_TOTAL_ATTACHED_TEXT_BYTES) {
+      } else if (!imageMime && (isSvg || isTextAttachmentFile(file)) && textBytes + file.size <= MAX_TOTAL_ATTACHED_TEXT_BYTES) {
         inlineText.push(file);
         textBytes += file.size;
         reservedText += file.size;
@@ -621,7 +628,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       work.imageBytes -= reservedImages;
       attachmentControllersRef.current.delete(controller);
     }
-  }, [cwd, t]);
+  };
 
   const processFilesRef = useRef(processFiles);
   processFilesRef.current = processFiles;
@@ -891,6 +898,10 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     await dispatchWithImages(async (images) => {
       if (rejectsOversizedPrompt(composedMessage, images)) return;
       const key = draftKeyRef.current;
+      const text = valueRef.current;
+      const originalImages = attachedImagesRef.current;
+      const files = attachedTextFilesRef.current;
+      const revision = attachmentRevisionRef.current;
       // Hydration opens a window in which a run can start elsewhere and the
       // hook then refuses the prompt. Only an accepted send may clear the
       // draft: every edit persists it, so a refusal needs no restore of its own.
@@ -898,7 +909,9 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         setAttachError(t("chatInput.sendNotStarted"));
         return;
       }
-      if (draftKeyRef.current === key) clearInput();
+      if (draftKeyRef.current === key && valueRef.current === text
+        && attachedImagesRef.current === originalImages && attachedTextFilesRef.current === files
+        && attachmentRevisionRef.current === revision && attachmentWorkRef.current.count === 0) clearInput();
     });
   }, [value, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock, rejectsOversizedPrompt, runBuiltinCommand, sendSideQuestion, dispatchWithImages, t]);
   const {
@@ -1419,7 +1432,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     void handleQueueAction(firstQueued, "steer");
   }, [firstQueued, handleQueueAction]);
 
-  const getNextSlashIndex = useCallback((direction: "up" | "down" | "left" | "right") => {
+  const getNextSlashIndex = (direction: "up" | "down" | "left" | "right") => {
     const lastIndex = filteredSlashCommands.length - 1;
     if (lastIndex < 0) return 0;
 
@@ -1460,12 +1473,12 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     return direction === "down"
       ? Math.min(lastIndex, slashActiveIndex + 1)
       : Math.max(0, slashActiveIndex - 1);
-  }, [filteredSlashCommands.length, slashActiveIndex]);
+  };
 
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
       const nativeEvent = e.nativeEvent;
-      const recentlyComposed = Date.now() - lastCompositionEndAtRef.current < COMPOSITION_END_ENTER_GRACE_MS;
+      const recentlyComposed = lastCompositionEndAtRef.current > 0
+        && e.timeStamp - lastCompositionEndAtRef.current < COMPOSITION_END_ENTER_GRACE_MS;
       const isComposing =
         isComposingRef.current ||
         nativeEvent.isComposing ||
@@ -1623,19 +1636,17 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
           handleSend();
         }
       }
-    },
-    [isMobile, isStreaming, onSteer, onFollowUp, onAbort, onMinimize, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, toggleDictation, wordPrediction]
-  );
+  };
 
 
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+  const handlePaste = (e: React.ClipboardEvent) => {
     const items = Array.from(e.clipboardData?.items ?? []);
     const imageItems = items.filter((item) => item.type.startsWith("image/"));
     if (!imageItems.length) return;
     e.preventDefault();
     const files = imageItems.map((item) => item.getAsFile()).filter((f): f is File => f !== null);
     processFiles(files);
-  }, [processFiles]);
+  };
 
   useEffect(() => {
     if (slashQuery === null) {
@@ -2722,7 +2733,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             }}
             onCompositionEnd={(e) => {
               isComposingRef.current = false;
-              lastCompositionEndAtRef.current = Date.now();
+              lastCompositionEndAtRef.current = e.timeStamp;
               const el = e.currentTarget;
               updateAtQuery(el.value, el.selectionStart);
               wordPrediction.update(el.value, el.selectionStart, el.selectionEnd);

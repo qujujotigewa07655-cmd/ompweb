@@ -146,7 +146,7 @@ export const ChatMinimap = memo(function ChatMinimap({ messages, scrollContainer
 
   // Smoothly scroll to the target message with multi-strategy element resolution
   const reducedMotion = usePrefersReducedMotion();
-  const scrollToNode = useCallback((node: NavNode, smooth = true) => {
+  const scrollToNode = (node: NavNode, smooth = true) => {
     const scrollEl = scrollContainer.current;
     if (!scrollEl) return;
     let targetEl = messageRefs.current?.[node.refIndex];
@@ -177,13 +177,13 @@ export const ChatMinimap = memo(function ChatMinimap({ messages, scrollContainer
         scrollEl.scrollTo({ top: targetScroll, behavior });
       }
     }
-  }, [scrollContainer, messageRefs, messages.length, reducedMotion]);
+  };
 
   const scrollToNodeRef = useRef(scrollToNode);
   scrollToNodeRef.current = scrollToNode;
 
   // Scroll-spy: identify which message node is currently in the viewport
-  const updateScroll = useCallback(() => {
+  const updateScroll = () => {
     const scrollEl = scrollContainer.current;
     if (!scrollEl || nodes.length === 0) return;
 
@@ -215,7 +215,7 @@ export const ChatMinimap = memo(function ChatMinimap({ messages, scrollContainer
     }
 
     setActiveIndex(bestIdx);
-  }, [scrollContainer, messageRefs, nodes]);
+  };
 
   const updateScrollRef = useRef(updateScroll);
   updateScrollRef.current = updateScroll;

@@ -36,15 +36,66 @@ export interface PlanOptions {
   hideThinking?: boolean;
 }
 
+/** Prefix for the one-line metadata dividers the session reader emits
+ * (`session-event:<kind>`). They are never folded into a turn's activity. */
+export const SESSION_EVENT_PREFIX = "session-event:";
+
+export function isSessionEvent(message: AgentMessage): boolean {
+  return message.role === "custom" && (message as CustomMessage).customType.startsWith(SESSION_EVENT_PREFIX);
+}
+
+function sameSessionEventValue(previous: unknown, next: unknown): boolean {
+  return typeof previous === "string" && previous.trim().length > 0 && previous === next;
+}
+
+/** Hide only adjacent confirming state rewrites; raw messages and IDs stay intact. */
+export function isDuplicateSessionEvent(previous: AgentMessage | undefined, next: AgentMessage): boolean {
+  if (!previous || previous.role !== "custom" || next.role !== "custom" || previous.customType !== next.customType) return false;
+  if (!previous.details || typeof previous.details !== "object" || Array.isArray(previous.details)
+    || !next.details || typeof next.details !== "object" || Array.isArray(next.details)) return false;
+  const before = previous.details as Record<string, unknown>;
+  const after = next.details as Record<string, unknown>;
+  switch (next.customType) {
+    case `${SESSION_EVENT_PREFIX}model`:
+      return sameSessionEventValue(before.model, after.model)
+        && sameSessionEventValue(before.role === undefined ? "default" : before.role, after.role === undefined ? "default" : after.role);
+    case `${SESSION_EVENT_PREFIX}thinking`:
+      if (before.thinkingLevel === undefined && after.thinkingLevel === undefined) {
+        return sameSessionEventValue(before.configured, after.configured);
+      }
+      return sameSessionEventValue(before.thinkingLevel, after.thinkingLevel)
+        && ((before.configured === undefined && after.configured === undefined) || sameSessionEventValue(before.configured, after.configured));
+    case `${SESSION_EVENT_PREFIX}mode`:
+      // A payload can identify a different plan even when the mode name matches.
+      return sameSessionEventValue(before.mode, after.mode)
+        && (before.data === undefined || (before.data !== null && typeof before.data === "object" && !Array.isArray(before.data) && Object.keys(before.data).length === 0))
+        && (after.data === undefined || (after.data !== null && typeof after.data === "object" && !Array.isArray(after.data) && Object.keys(after.data).length === 0));
+    case `${SESSION_EVENT_PREFIX}tier`:
+      return sameSessionEventValue(before.serviceTier, after.serviceTier);
+    default:
+      // Resets are distinct actions, and unknown event kinds have no state contract.
+      return false;
+  }
+}
+
 // A user message normally anchors a turn. When compaction fires mid-turn, pi
 // drops the original user prompt and inserts a compaction summary (role
 // "custom", customType "compaction") in its place; the agent then keeps
 // producing tool calls and answers with no user message left to anchor them.
 // Treat a compaction summary as an anchor too, otherwise every
 // post-compaction message renders standalone and never folds.
+// Session-event dividers (model/thinking/mode/tier/reset) anchor a turn the
+// same way: they are rendered as the group's first message, so they stay
+// visible and never sink into the activity fold, and the activity after them
+// still folds.
 export function isGroupAnchor(message: AgentMessage): boolean {
   if (message.role === "user") return true;
+  if (isSessionEvent(message)) return true;
   return message.role === "custom" && (message as CustomMessage).customType === "compaction";
+}
+
+export function isVisibleGroupAnchor(messages: AgentMessage[], index: number): boolean {
+  return isGroupAnchor(messages[index]) && !isDuplicateSessionEvent(messages[index - 1], messages[index]);
 }
 
 /** Split one anchored turn into text and folded-activity segments. */
@@ -73,6 +124,9 @@ export function planTurnSegments(
     // Mount notices never render; counting them would show an empty fold.
     // Passive tool context rides on its tool card instead of being a row.
     if (msg.role === "custom" && ((msg as CustomMessage).customType === "xdev-mount-notice" || isPassiveToolContext(msg))) continue;
+    // Session metadata dividers are standalone rows (planTranscriptRows splits
+    // the turn at them); never fold one into the activity run.
+    if (isSessionEvent(msg)) continue;
     if (msg.role !== "assistant") {
       // Job results, reminders, and other notices are activity, as in the TUI.
       addActivity({ index: idx }, 0);
@@ -132,9 +186,9 @@ export function planTurnSegments(
  */
 export function looksLikeRunningTurn(messages: AgentMessage[]): boolean {
   // Passive tool context lands between a tool batch and the next assistant
-  // message, so it never ends a turn.
+  // message, so it never ends a turn. Neither does a metadata divider.
   let end = messages.length - 1;
-  while (end >= 0 && isPassiveToolContext(messages[end])) end -= 1;
+  while (end >= 0 && (isPassiveToolContext(messages[end]) || isSessionEvent(messages[end]))) end -= 1;
   const last = messages[end];
   if (!last) return false;
   if (last.role === "toolResult") return true;
@@ -241,6 +295,10 @@ export function collectToolResults(messages: AgentMessage[]): Map<string, ToolRe
 export function planTranscriptRows(messages: AgentMessage[], options: PlanOptions = {}): TranscriptRow[] {
   const rows: TranscriptRow[] = [];
   for (let idx = 0; idx < messages.length;) {
+    if (isDuplicateSessionEvent(messages[idx - 1], messages[idx])) {
+      idx += 1;
+      continue;
+    }
     if (!isGroupAnchor(messages[idx])) {
       rows.push({ kind: "message", index: idx });
       idx += 1;
@@ -248,13 +306,15 @@ export function planTranscriptRows(messages: AgentMessage[], options: PlanOption
     }
     const userIdx = idx;
     let endIdx = userIdx + 1;
-    while (endIdx < messages.length && !isGroupAnchor(messages[endIdx])) endIdx += 1;
+    while (endIdx < messages.length && !isVisibleGroupAnchor(messages, endIdx)) endIdx += 1;
     const segments = planTurnSegments(messages, userIdx, endIdx, options);
     if (segments.some((segment) => segment.kind === "activity")) {
       rows.push({ kind: "group", userIndex: userIdx, endIndex: endIdx, segments });
     } else {
       // Nothing to fold: render the anchor and the rest as standalone messages.
-      for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) rows.push({ kind: "message", index: renderIdx });
+      for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
+        if (!isDuplicateSessionEvent(messages[renderIdx - 1], messages[renderIdx])) rows.push({ kind: "message", index: renderIdx });
+      }
     }
     idx = endIdx;
   }

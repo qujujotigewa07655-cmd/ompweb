@@ -328,6 +328,60 @@ test("a prompt the session refuses after hydration keeps its draft and says so",
   assert.equal(screen.getByRole("textbox").value, "Keep this");
 });
 
+for (const edit of ["none", "text", "document", "image", "pending document"]) {
+  test(`an accepted send preserves subsequent composer edits: ${edit}`, async () => {
+    const accepted = Promise.withResolvers();
+    const ref = React.createRef();
+    let sends = 0;
+    render(React.createElement(ChatInput, {
+      ref, draftKey: KEY, isStreaming: false, onAbort() {},
+      onSend: () => { sends++; return accepted.promise; },
+    }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "sent text" } });
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    await waitFor(() => assert.equal(sends, 1));
+    let finishRead;
+    if (edit === "text") {
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "next question" } });
+    } else if (edit !== "none") {
+      const file = edit === "image"
+        ? new File([Buffer.from(PNG, "base64")], "next.png", { type: "image/png" })
+        : new File(["next document"], "next.txt", { type: "text/plain" });
+      if (edit === "pending document") {
+        const reading = Promise.withResolvers();
+        file.text = () => reading.promise;
+        finishRead = () => reading.resolve("next document");
+      }
+      await act(async () => { ref.current.addFiles([file]); });
+      if (!finishRead) await waitFor(() => assert.equal(edit === "image" ? getDraft(KEY)?.images.length : getDraft(KEY)?.files.length, 1));
+    }
+    await act(async () => { accepted.resolve(true); });
+    if (finishRead) {
+      await act(async () => { finishRead(); });
+      await waitFor(() => assert.equal(getDraft(KEY)?.files.length, 1));
+    }
+    if (edit === "none") {
+      assert.equal(screen.getByRole("textbox").value, "");
+      assert.equal(getDraft(KEY), null);
+    } else {
+      assert.equal(screen.getByRole("textbox").value, edit === "text" ? "next question" : "sent text");
+      if (edit === "image") assert.equal(getDraft(KEY)?.images[0]?.data, PNG);
+      else if (edit !== "text") assert.equal(getDraft(KEY)?.files[0]?.content, "next document");
+    }
+  });
+}
+
+for (const type of ["image/svg+xml", ""]) {
+  test(`SVG is attached as text rather than a model image (${type || "empty MIME"})`, async () => {
+    const ref = React.createRef();
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>vector marker</text></svg>';
+    render(React.createElement(ChatInput, { ref, draftKey: KEY, isStreaming: false, onSend() {}, onAbort() {} }));
+    await act(async () => { ref.current.addFiles([new File([svg], "diagram.svg", { type })]); });
+    await waitFor(() => assert.equal(getDraft(KEY)?.files[0]?.content, svg));
+    assert.equal(getDraft(KEY).images.length, 0);
+  });
+}
+
 for (const order of ["document first", "text first"]) {
   test(`restoring a draft keeps inline text beside an uploaded document (${order})`, async () => {
     const { setDraft } = await jiti.import("@/lib/draft-store");

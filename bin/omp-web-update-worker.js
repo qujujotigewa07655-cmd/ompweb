@@ -120,13 +120,17 @@ async function runManagerGate() {
   if (kind === "omp") {
     // Run omp update
     const bin = process.env.OMP_WEB_OMP_BIN || "omp";
-    // Try resolve via packageDir/../?
-    await new Promise((resolve) => {
-      const child = cp.spawn(bin, ["update"], { timeout: 5 * 60 * 1000, windowsHide: true, env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" } });
-      child.on("close", () => resolve());
-      child.on("error", () => resolve());
-      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} resolve(); }, 5 * 60 * 1000 + 1000);
+    const result = cp.spawnSync(bin, ["update"], {
+      timeout: 5 * 60 * 1000,
+      killSignal: "SIGKILL",
+      windowsHide: true,
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
     });
+    if (result.error || result.status !== 0 || result.signal) {
+      const detail = String(result.error?.message || result.stderr?.toString().trim() || "").slice(0, 500);
+      throw new Error(`OMP update failed (exit ${result.status ?? result.signal ?? "unknown"})${detail ? `: ${detail}` : ""}`);
+    }
     return;
   }
   // App update via npm/bun
@@ -193,6 +197,16 @@ async function main() {
   if (!/^[0-9a-f-]{36}$/i.test(attemptId || "") || !root || !packageDir || !target) {
     process.exit(1);
   }
+  if (["1", "true", "yes", "on"].includes(String(process.env.OMP_WEB_DISABLE_AUTOUPDATE || "").trim().toLowerCase())) {
+    throw new Error("Updates are disabled by OMP_WEB_DISABLE_AUTOUPDATE");
+  }
+  if (kind !== "omp") {
+    const pkg = readJson(path.join(packageDir, "package.json"));
+    if (!pkg || typeof pkg !== "object" || Array.isArray(pkg) ||
+      pkg.name !== "@kahme247/ompweb" || ("private" in pkg && pkg.private !== false)) {
+      throw new Error("Automatic app updates are unavailable for private or non-upstream packages");
+    }
+  }
   // Check abort
   if (fs.existsSync(abortFile())) {
     updateStatus({ state: "failed", error: (readJson(abortFile()) || {}).reason || "aborted", finishedAt: new Date().toISOString(), cleanupReady: true });
@@ -206,6 +220,7 @@ async function main() {
       await sleep(200);
     }
   }
+  if (!fs.existsSync(markerFile("go"))) throw new Error("Update commit signal was not received");
   updateStatus({ state: "running", stage: "preparing", startedAt: new Date().toISOString() });
   await sleep(1000); // PREPARING_MIN 1s
 

@@ -85,6 +85,12 @@ export interface AssistantMessage {
   stopReason?: string;
   errorMessage?: string;
   timestamp?: number;
+  /** Time to first token, MILLISECONDS, as omp records it on the transcript
+   *  entry. Model latency only — tool execution is not included. */
+  ttft?: number;
+  /** Total model latency for this message, MILLISECONDS, as omp records it on
+   *  the transcript entry. Tool execution is not included. */
+  duration?: number;
   usage?: {
     input: number;
     output: number;
@@ -452,12 +458,6 @@ export interface SessionInfo {
   projectKey?: string;
   /** Branch name when cwd is a linked git worktree (not the main checkout) */
   worktreeBranch?: string;
-  /** Billed cost of this session in USD, from omp's own usage records. */
-  costUsd?: number;
-  /** Total tokens billed to this session (input + output + cache). */
-  tokens?: number;
-  /** Model the session last ran on (the one its latest request used). */
-  lastModel?: string;
 }
 
 /** Metadata for a gzip-compressed session in OMP's archive tree. */

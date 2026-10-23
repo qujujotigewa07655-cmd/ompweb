@@ -1,14 +1,16 @@
+import "../tests/setup-dom.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createJiti } from "jiti";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react/pure.js";
 
 const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { TaskBlock, CompletionBlock, SubagentModel } = await jiti.import("./SubagentTranscriptDialog.tsx");
+const { TaskBlock, CompletionBlock, SubagentModel, SubagentTranscriptDialog } = await jiti.import("./SubagentTranscriptDialog.tsx");
 
 test("shows the provider-qualified model and reasoning effort split from the resolved model", () => {
   const html = renderToStaticMarkup(React.createElement(SubagentModel, {
@@ -89,4 +91,55 @@ test("shows an empty state when no completion exists yet", () => {
     truncated: false,
   }));
   assert.match(html, /No output yet/);
+});
+
+test("paged subagent transcripts hide confirming state rewrites without losing cursors or resets", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { cleanup(); globalThis.fetch = originalFetch; });
+  const state = (content) => ({
+    role: "custom", customType: "session-event:model", display: true, content, details: { model: "provider/model" },
+  });
+  const reset = { role: "custom", customType: "session-event:reset", display: true, content: "Context reset", details: {} };
+  const pages = [
+    { fromByte: 0, nextByte: 100, messages: [state("Original model")] },
+    { fromByte: 100, nextByte: 200, messages: [state("Hidden confirmation")] },
+    {
+      fromByte: 200, nextByte: 300, messages: [
+        state("Hidden third rewrite"),
+        { role: "assistant", content: [{ type: "toolCall", toolCallId: "tc1", toolName: "bash", input: { command: "still visible" } }] },
+        reset,
+        { ...reset },
+      ],
+    },
+  ];
+  const cursors = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(String(url), "https://omp.test/");
+    if (parsed.searchParams.get("mode") === "completion") return Response.json({ completion: "Settled output", truncated: false });
+    const fromByte = Number(parsed.searchParams.get("fromByte"));
+    cursors.push(fromByte);
+    const page = pages.find((candidate) => candidate.fromByte === fromByte);
+    assert.ok(page, `unexpected transcript cursor ${fromByte}`);
+    return Response.json({ sessionFile: "/tmp/worker.jsonl", totalBytes: 300, ...page });
+  };
+  render(React.createElement(SubagentTranscriptDialog, {
+    subagent: { id: "worker", agent: "worker", source: "history", sessionFile: "/tmp/worker.jsonl" },
+    sessionId: "main", transcriptVersion: 0, onClose() {},
+  }));
+  await screen.findByText("Settled output");
+  fireEvent.click(screen.getByRole("button", { name: "Show transcript" }));
+  await screen.findByText("Original model");
+  fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+  await waitFor(() => {
+    assert.deepEqual(cursors, [0, 100]);
+    assert.ok(screen.getByRole("button", { name: "Load more" }), "a duplicate-only page is not exhausted");
+  });
+  assert.equal(screen.queryByText("Hidden confirmation"), null);
+  fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+  await screen.findByText(/still visible/);
+  assert.deepEqual(cursors, [0, 100, 200]);
+  assert.equal(screen.queryByText("Hidden confirmation"), null);
+  assert.equal(screen.queryByText("Hidden third rewrite"), null);
+  assert.equal(screen.getAllByText("Context reset").length, 2);
+  assert.equal(screen.queryByRole("button", { name: "Load more" }), null);
 });

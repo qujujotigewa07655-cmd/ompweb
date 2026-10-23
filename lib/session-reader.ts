@@ -31,8 +31,7 @@ import type { TodoPhase } from "./pi-types";
 import { projectIdentityKey, sessionPathKey } from "./paths";
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { selectHistoryRange, type SessionHistoryCursor, type SessionHistoryPage } from "./session-sync";
-import { PASSIVE_TOOL_CONTEXT } from "./chat-transcript-plan";
-import { getSessionUsageTotals } from "./usage-db";
+import { PASSIVE_TOOL_CONTEXT, SESSION_EVENT_PREFIX } from "./chat-transcript-plan";
 
 export { getAgentDir };
 
@@ -55,10 +54,6 @@ function matchParentSessionId(
 
 async function loadAllSessions(): Promise<SessionInfo[]> {
   const ompSessions: OmpSessionInfo[] = await listAllSessionInfos();
-  // Cost/model annotation: cheap (one grouped read, measured ~80 ms over 745
-  // sessions) and independently failure-tolerant, so it runs beside the
-  // project resolution instead of serializing behind it.
-  const usagePromise = getSessionUsageTotals().catch(() => null);
   const pathToId = new Map<string, string>();
   const knownIds = new Set<string>();
   for (const s of ompSessions) {
@@ -79,12 +74,9 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
     }));
   }
 
-  const usageBySession = await usagePromise;
-
   return ompSessions.map((s) => {
     cacheSessionPath(s.id, s.path);
     const project = s.cwd ? projectByCwd.get(s.cwd) : undefined;
-    const usage = usageBySession?.get(s.id);
     return {
       path: s.path,
       id: s.id,
@@ -103,8 +95,6 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
       projectRoot: project?.projectRoot ?? s.cwd,
       projectKey: projectIdentityKey(project?.projectRoot ?? s.cwd),
       ...(project?.isWorktree && project.branch ? { worktreeBranch: project.branch } : {}),
-      ...(usage && usage.cost > 0 ? { costUsd: usage.cost, tokens: usage.tokens } : {}),
-      ...(usage?.model ? { lastModel: usage.model } : {}),
     };
   });
 }
@@ -636,7 +626,12 @@ function historyEntryMetadata(entry: SessionEntry): SessionEntry {
   } else if (entry.type === "model_change") {
     Object.assign(compact, { model: entry.model, role: entry.role, provider: entry.provider, modelId: entry.modelId });
   } else if (entry.type === "thinking_level_change") {
-    compact.thinkingLevel = entry.thinkingLevel;
+    // `configured` is the fallback the divider text uses; selection needs it.
+    Object.assign(compact, { thinkingLevel: entry.thinkingLevel, configured: entry.configured });
+  } else if (entry.type === "mode_change") {
+    compact.mode = entry.mode;
+  } else if (entry.type === "service_tier_change") {
+    compact.serviceTier = entry.serviceTier;
   } else if (entry.type === "compaction") {
     compact.firstKeptEntryId = entry.firstKeptEntryId;
     compact.firstKeptEntryIndex = (entry as unknown as Record<string, unknown>).firstKeptEntryIndex;
@@ -849,19 +844,24 @@ const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided aft
  * targets remain aligned, and the active compaction summary is emitted first
  * (the collapsed view the pi-web UI is built around).
  */
+
 export function buildSessionContext(
   entries: SessionEntry[],
   leafId?: string | null,
   options: { deferThinking?: boolean; deferToolResultImages?: boolean; includePreCompaction?: boolean } = {},
 ): SessionContext {
   const { selected, compactionId, ...metadata } = selectSessionContext(entries, leafId, options);
-  return {
-    ...metadata,
-    entryIds: selected.map((entry) => entry.id),
-    messages: selected.map((entry) => entry.type === "compaction"
+  const entryIds: string[] = [];
+  const messages: AgentMessage[] = [];
+  for (const entry of selected) {
+    const message = entry.type === "compaction"
       ? compactionUiMessage(entry, entry.id === compactionId)
-      : entryToUiMessage(entry, options)!),
-  };
+      : entryToUiMessage(entry, options);
+    if (!message) continue;
+    entryIds.push(entry.id);
+    messages.push(message);
+  }
+  return { ...metadata, entryIds, messages };
 }
 
 /** Select ordering and branch metadata without converting message bodies. */
@@ -918,7 +918,9 @@ function selectSessionContext(
   const appendEntry = (entry: SessionEntry) => {
     if (entry.type === "compaction" || entry.type === "custom_message"
       || (entry.type === "message" && isRecord(entry.message))
-      || (entry.type === "branch_summary" && entry.summary)) {
+      || (entry.type === "branch_summary" && entry.summary)
+      // Same predicate as entryToUiMessage: messages and entryIds stay parallel.
+      || sessionEventUiMessage(entry) !== null) {
       selected.push(entry);
     }
   };
@@ -1162,6 +1164,65 @@ function compactionUiMessage(entry: CompactionEntry, active: boolean): CustomMes
   };
 }
 
+function sessionEvent(
+  kind: string, content: string, details: Record<string, unknown>, timestamp: string,
+): CustomMessage {
+  return {
+    role: "custom",
+    customType: `${SESSION_EVENT_PREFIX}${kind}`,
+    content,
+    display: true,
+    details,
+    timestamp: parseEntryTimestamp(timestamp),
+  };
+}
+
+/**
+ * Metadata entries → transcript dividers. Returns null where a divider would
+ * only be noise (an empty thinking level, a cleared service tier); callers use
+ * the same predicate for selection so `messages`/`entryIds` stay parallel.
+ */
+function sessionEventUiMessage(entry: SessionEntry): CustomMessage | null {
+  // `reset_boundary` is not part of the SessionEntry union yet; widen once,
+  // checked, instead of casting an object type at each access.
+  const type: string = entry.type;
+  if (type === "reset_boundary") {
+    return sessionEvent("reset", "Context reset", {}, entry.timestamp);
+  }
+  switch (entry.type) {
+    case "model_change": {
+      const model = entry.model ?? (entry.provider && entry.modelId ? `${entry.provider}/${entry.modelId}` : undefined);
+      if (!model) return null;
+      const role = entry.role && entry.role !== "default" ? entry.role : undefined;
+      return sessionEvent(
+        "model",
+        `Model → ${model}${role ? ` (${role})` : ""}`,
+        { model, ...(role ? { role } : {}) },
+        entry.timestamp,
+      );
+    }
+    case "thinking_level_change": {
+      const value = entry.thinkingLevel || entry.configured;
+      if (!value) return null;
+      return sessionEvent(
+        "thinking",
+        `Thinking → ${value}`,
+        { ...(entry.thinkingLevel ? { thinkingLevel: entry.thinkingLevel } : {}), ...(entry.configured ? { configured: entry.configured } : {}) },
+        entry.timestamp,
+      );
+    }
+    case "mode_change":
+      return sessionEvent("mode", `Mode → ${entry.mode}`, { mode: entry.mode, ...(entry.data !== undefined ? { data: entry.data } : {}) }, entry.timestamp);
+    case "service_tier_change": {
+      const tier = entry.serviceTier;
+      if (tier === null || tier === undefined) return null;
+      return sessionEvent("tier", `Service tier → ${String(tier)}`, { serviceTier: tier }, entry.timestamp);
+    }
+    default:
+      return null;
+  }
+}
+
 // Convert a session entry on the active branch into a UI message.
 // Returns null for entries that do not map to chat history (metadata, non-message types).
 export function entryToUiMessage(
@@ -1255,9 +1316,8 @@ export function entryToUiMessage(
         timestamp: parseEntryTimestamp(entry.timestamp),
       };
     default:
-      // model_change, thinking_level_change, service_tier_change, label,
-      // title_change, session_init, ttsr_injection, mode_change, custom,
+      // label, title_change, session_init, ttsr_injection, custom,
       // session_info: metadata entries with no chat rendering.
-      return null;
+      return sessionEventUiMessage(entry);
   }
 }

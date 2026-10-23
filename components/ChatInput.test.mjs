@@ -1,6 +1,8 @@
+import "../tests/setup-dom.mjs";
 import assert from "node:assert/strict";
-import test from "node:test";
-import React from "react";
+import test, { afterEach, beforeEach } from "node:test";
+import React, { act } from "react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react/pure.js";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createJiti } from "jiti";
 import { JSDOM } from "jsdom";
@@ -10,7 +12,20 @@ const jiti = createJiti(import.meta.url, {
   tsconfigPaths: true,
 });
 const { ChatInput, ModelErrorBanner, filterModelOptions } = await jiti.import("./ChatInput.tsx");
-const { setDraft, clearDraft } = await jiti.import("@/lib/draft-store");
+const { setDraft, getDraft, clearDraft } = await jiti.import("@/lib/draft-store");
+const { translate } = await jiti.import("@/lib/i18n");
+
+beforeEach(() => {
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  window.HTMLElement.prototype.scrollIntoView = () => {};
+});
+afterEach(() => {
+  cleanup();
+  clearDraft("chat-input-model-recovery");
+  localStorage.clear();
+  delete window.matchMedia;
+  delete window.HTMLElement.prototype.scrollIntoView;
+});
 
 test("provider-defined reasoning levels appear once in the trigger", () => {
   for (const thinkingLevel of ["ultra", "ultrathink-extended", "constructor"]) {
@@ -423,4 +438,68 @@ test("renders both queued prompts and attached status bar together", () => {
   assert.match(html, /Next prompt to run/);
   assert.match(html, /Waiting for model\.\.\./);
   assert.match(html, /live-status-dot/);
+});
+
+test("imperative model picker opens existing options without changing the draft or sending", async () => {
+  const draft = {
+    value: "Keep this unsent draft",
+    images: [],
+    files: [{ name: "notes.txt", mimeType: "text/plain", content: "Keep this attachment", size: 20 }],
+  };
+  setDraft("chat-input-model-recovery", draft);
+  const ref = React.createRef();
+  const calls = [];
+  const record = (name) => (...args) => calls.push([name, ...args]);
+  render(React.createElement(ChatInput, {
+    ref,
+    draftKey: "chat-input-model-recovery",
+    isStreaming: false,
+    onSend: record("send"),
+    onSteer: record("steer"),
+    onFollowUp: record("followUp"),
+    onAbort: record("abort"),
+    onModelChange: record("model"),
+    model: { provider: "test", modelId: "current" },
+    modelList: [
+      { provider: "test", id: "current", name: "Current model" },
+      { provider: "test", id: "other", name: "Other model" },
+    ],
+  }));
+  const textarea = screen.getByRole("textbox");
+  const hydratedDraft = getDraft("chat-input-model-recovery");
+  assert.equal(screen.queryByRole("dialog"), null);
+  act(() => ref.current.openModelPicker());
+  assert.ok(screen.getByRole("menuitemradio", { name: /Other model/ }));
+  await waitFor(() => assert.ok(document.activeElement === screen.getByRole("searchbox", { name: translate("chatInput.searchModels") }), "model search receives focus"));
+  assert.equal(textarea.value, draft.value);
+  assert.ok(screen.getByText("notes.txt"));
+  assert.deepEqual(getDraft("chat-input-model-recovery"), hydratedDraft);
+  assert.deepEqual(calls, []);
+});
+
+test("imperative model picker follows native busy, loading, and availability guards", () => {
+  const ref = React.createRef();
+  const base = { ref, onSend() {}, onModelChange() {}, isStreaming: false };
+  const { rerender } = render(React.createElement(ChatInput, {
+    ...base,
+    isStreaming: true,
+    modelList: [{ provider: "test", id: "other", name: "Other model" }],
+  }));
+  act(() => ref.current.openModelPicker());
+  assert.equal(screen.queryByRole("dialog"), null);
+  for (const props of [
+    { modelsLoading: true, modelList: [] },
+    { modelList: [] },
+    { modelList: [{ provider: "test", id: "other", name: "Other model" }], onModelChange: undefined },
+  ]) {
+    rerender(React.createElement(ChatInput, { ...base, ...props }));
+    act(() => ref.current.openModelPicker());
+    assert.equal(screen.queryByRole("dialog"), null);
+  }
+  rerender(React.createElement(ChatInput, {
+    ...base,
+    modelList: [{ provider: "test", id: "other", name: "Other model" }],
+  }));
+  act(() => ref.current.openModelPicker());
+  assert.ok(screen.getByRole("menuitemradio", { name: /Other model/ }));
 });

@@ -659,9 +659,10 @@ export function AppShell({ appName }: { appName: string }) {
     }
   }, [advanceAppUpdateVisibleStage, monitorAppUpdate, resetAppUpdateVisibleStage, showAppUpdateFailure, showAppUpdateStagesThrough, submitAppUpdateCommit]);
 
+  const availableAppVersion = appUpdate?.availableVersion;
   const dismissAppUpdate = useCallback(() => {
-    if (appUpdatePhase === "idle" && appUpdate?.availableVersion) {
-      rememberDismissedVersion(DISMISSED_APP_UPDATE_KEY, appUpdate.availableVersion);
+    if (appUpdatePhase === "idle" && availableAppVersion) {
+      rememberDismissedVersion(DISMISSED_APP_UPDATE_KEY, availableAppVersion);
       toast.info(t("appUpdateDialog.settingsLater"));
     }
     setAppUpdateDialogOpen(false);
@@ -669,7 +670,7 @@ export function AppShell({ appName }: { appName: string }) {
     setAppUpdateError(null);
     appUpdateAttemptRef.current = null;
     resetAppUpdateVisibleStage();
-  }, [appUpdate?.availableVersion, appUpdatePhase, resetAppUpdateVisibleStage, t]);
+  }, [availableAppVersion, appUpdatePhase, resetAppUpdateVisibleStage, t]);
 
   const requestAppUpdateFromSettings = useCallback(() => {
     setSettingsTab(null);

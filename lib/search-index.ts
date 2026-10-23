@@ -38,11 +38,9 @@ const OVERLAP = 255;
 const PROJECT_REFRESH_MS = 30_000;
 /** How long the list of managed project roots is reused. */
 const ROOTS_TTL_MS = 60_000;
-// 6: a text file that became binary used to keep its sections while only its
-// size and time were refreshed, so an existing cache can still answer with the
-// old text. Dropping the tables rebuilds the cache instead of leaving rows that
-// no later pass revisits.
-const SCHEMA_VERSION = 6;
+// 7: rebuild stale plain-text chunks left by skipped whitespace, and keep
+// NUL-containing sections outside FTS so suffix searches use the full scan.
+const SCHEMA_VERSION = 7;
 
 export type Source = { kind: FullTextSearchResult["kind"]; source: string; filePath: string; title: string; session?: SessionInfo };
 export type Section = { text: string; location: string; entryId?: string; session?: SessionInfo; overlap?: number; lineBase?: number };
@@ -259,12 +257,11 @@ async function* plainTextSections(filePath: string, signal?: AbortSignal): Async
   let line = 1;
   let tail = "";
   const push = function* (chunk: string): Generator<Section> {
-    if (!chunk.trim()) return;
     for (const character of chunk) {
       const code = character.charCodeAt(0);
       if (code < 32 && character !== "\t" && character !== "\r" && character !== "\n" && character !== "\f") throw new Error("Binary data is not a text document");
     }
-    yield { text: tail + chunk, overlap: tail.length, location: `Line ${line}`, lineBase: line };
+    if (chunk.trim()) yield { text: tail + chunk, overlap: tail.length, location: `Line ${line}`, lineBase: line };
     for (const character of chunk) if (character === "\n") line++;
     tail = chunk.slice(-OVERLAP);
   };
@@ -397,15 +394,18 @@ function database(): DatabaseSync {
   db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;");
   // Keep the literal /iu filter inside the scan, caching its regex once per
   // needle instead of lowercasing and copying every stored section.
+  // BLOB arguments avoid Node's NUL-terminated TEXT conversion; retain any BOM.
+  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
   let containsNeedle: string | undefined;
   let containsPattern: RegExp | undefined;
   db.function("icontains", { deterministic: true }, (text, needle) => {
-    if (typeof text !== "string" || typeof needle !== "string") return 0;
+    if (needle instanceof Uint8Array) needle = decoder.decode(needle);
+    if (!(text instanceof Uint8Array) || typeof needle !== "string") return 0;
     if (!containsPattern || needle !== containsNeedle) {
       containsPattern = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu");
       containsNeedle = needle;
     }
-    return containsPattern.test(text) ? 1 : 0;
+    return containsPattern.test(decoder.decode(text)) ? 1 : 0;
   });
   const version = Number((db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined)?.user_version ?? 0);
   if (version !== SCHEMA_VERSION) {
@@ -574,7 +574,7 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
             filePath, source, kind, section++, part.location, part.entryId ?? null,
             part.session?.name || title, part.session ? JSON.stringify(part.session) : null,
             kind === "file" ? filePath : null, part.overlap ?? 0,
-            part.text.length <= FTS_MAX_SECTION ? 1 : 0, part.lineBase ?? null, part.text,
+            part.text.length <= FTS_MAX_SECTION && !part.text.includes("\0") ? 1 : 0, part.lineBase ?? null, part.text,
           );
         }
       } catch (error) {

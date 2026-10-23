@@ -144,7 +144,7 @@ export async function handleAttachmentUpload(request: Request, presetDirectory?:
         const derived = path.join(upload.staging, "derived", String(index));
         await fs.mkdir(derived, { mode: 0o700 });
         const imageMime = getImageMime(file.name) ?? (file.mimeType.startsWith("image/") ? file.mimeType : null);
-        if (imageMime) {
+        if (imageMime && imageMime !== "image/svg+xml" && file.mimeType !== "image/svg+xml") {
           attachment.mimeType = imageMime;
           const derivative = path.join(derived, "vision.jpg");
           attachment.visionPath = derivative;
