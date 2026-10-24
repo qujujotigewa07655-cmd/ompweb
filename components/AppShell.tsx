@@ -120,7 +120,7 @@ type TimerHandle = NodeJS.Timeout;
 export function AppShell({ appName }: { appName: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [initialNavigation] = useState(() => getInitialNavigation(searchParams));
+  const [initialNavigation] = useState(() => getInitialNavigation(searchParams ?? new URLSearchParams()));
   const { t, locale } = useI18n();
   const isMobile = useIsMobile();
   const isCompactOverlay = useIsCompactOverlay();
@@ -1792,7 +1792,7 @@ export function AppShell({ appName }: { appName: string }) {
     ready: mobileSidebarReady,
     sidebarOpen,
     setSidebarOpen,
-    url: searchParams.toString(),
+    url: searchParams?.toString() ?? "",
   });
   useEffect(() => {
     if (sidebarHistory.exitNeedsNativeBack) {
