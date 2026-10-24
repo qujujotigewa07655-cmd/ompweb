@@ -8,8 +8,6 @@ import { translate, useI18n } from "@/lib/i18n";
 import { collectToolResults, isDuplicateSessionEvent, isVisibleGroupAnchor, planTranscriptRows, type ActivityPiece, type TranscriptRow } from "@/lib/chat-transcript-plan";
 import { resolveForkTargets } from "@/lib/chat-fork";
 import { isInterruptedMessage, MessageView } from "./MessageView";
-import { FullTextSearchPreview } from "./FullTextSearchPreview";
-import { clearSearchMessageTarget, getSearchMessageTarget, SEARCH_MESSAGE_EVENT, type SearchMessageTarget } from "@/lib/full-text-search-navigation";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ExtensionDialog } from "./ExtensionDialog";
 import { SubagentTranscriptDialog } from "./SubagentTranscriptDialog";
@@ -608,20 +606,6 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
       average: samples.reduce((sum, sample) => sum + sample, 0) / samples.length,
     });
   }, [tokensPerSecond]);
-  // The search opens the exact original entry, including tool output and
-  // messages outside the current branch or compaction window, without changing
-  // any agent state.
-  const [searchTarget, setSearchTarget] = useState<SearchMessageTarget | null>(null);
-  const searchTargetRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const receive = () => setSearchTarget(getSearchMessageTarget(session?.id));
-    receive();
-    window.addEventListener(SEARCH_MESSAGE_EVENT, receive);
-    return () => window.removeEventListener(SEARCH_MESSAGE_EVENT, receive);
-  }, [session?.id]);
-  useEffect(() => {
-    if (searchTarget) searchTargetRef.current?.focus();
-  }, [searchTarget]);
 
   // Rehydrate the session average from on-disk history after a reload: the
   // per-message generation speed is derivable from assistant usage.output and
@@ -1061,7 +1045,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
 
   const askOpen = extensionDialog?.method === "ask";
   const isHistoricalView = showPreCompactionHistory || (activeLeafId !== null && activeLeafId !== data?.leafId);
-  const isActiveConversationView = !!session && !isNew && !isHistoricalView && !searchTarget && !loading && !error;
+  const isActiveConversationView = !!session && !isNew && !isHistoricalView && !loading && !error;
   const canChooseRecoveryModel = isActiveConversationView && conversationMeta.latestAssistantFailed
     && !!chatInputRef && !sessionBusy && !externalRunActive && !isCompacting
     && !streamState.isStreaming && !streamState.streamingMessage && !askOpen;
@@ -1298,19 +1282,6 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
         {/* Hide the Firefox scrollbar on desktop only: ChatMinimap provides the
             position indicator there, but on mobile there is no minimap and
             users need the scrollbar (Chrome's overlay scrollbar still shows). */}
-        {searchTarget && searchTarget.result.session?.id === session?.id && (
-          <div ref={searchTargetRef} tabIndex={-1} style={{ padding: 16, overflow: "auto", minHeight: 0, flex: 1 }}>
-            <p role="status">{t("chatWindow.exactMatch")} · {searchTarget.result.location}</p>
-            <button type="button" className="ui-focus-ring" onClick={() => { clearSearchMessageTarget(session?.id); setSearchTarget(null); }} style={{ marginBottom: 12 }}>{t("chatWindow.backToConversation")}</button>
-            <FullTextSearchPreview
-              key={`${searchTarget.result.source}:${searchTarget.result.section}:${searchTarget.result.offset}`}
-              result={searchTarget.result}
-              query={searchTarget.query}
-              onClose={() => { clearSearchMessageTarget(session?.id); setSearchTarget(null); }}
-              onOpenFile={onOpenFile}
-            />
-          </div>
-        )}
         <div ref={scrollContainerRef} data-selection-scope="chat" tabIndex={-1} role="log" aria-live={streamState.isStreaming ? "off" : "polite"} aria-busy={streamState.isStreaming || undefined} aria-relevant="additions text" aria-label={t("chatWindow.conversation")} className={`flex-1 overflow-y-auto pt-6` + (isMobile ? "" : " scrollbar-none [&::-webkit-scrollbar]:hidden")} style={{ minHeight: 0 }}>
           <div style={{ padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
             <div style={{ maxWidth: isMobile ? CHAT_COLUMN_MAX_WIDTH : CHAT_COLUMN_MAX_WIDTH_DESKTOP, margin: "0 auto" }}>

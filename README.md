@@ -325,7 +325,6 @@ host (KDE Plasma, and most Wayland/X11 desktops).
 - **Live Plans & Subagents**: Collapsible panels pinned above the composer track live todo phases and running subagents (status, tool, retries, tokens/cost, nested tasks) with transcript dialogs and history recovery.
 - **Tool Preset Picker**: Choose the toolset for new sessions in the composer — `none` / `default` (`read,bash,edit,write`) / `full` (all tools including subagents). Persists to localStorage.
 - **File Explorer & Previews**: Browse workspaces side-by-side with chat; preview code, markdown, Mermaid, images, audio, PDFs, and diffs with allow-listed access.
-- **Full-text Search**: Search complete messages, tool output, compressed session archives, and managed project file contents, with exact-match previews and document page/paragraph/sheet locations. Open **Search messages & files** in the sidebar.
 - **Subscription Image Generation**: Create, preview and download images from the header using only the existing GPT/ChatGPT or Gemini/Antigravity subscription in OMP. No separate image API key or paid-API fallback.
 - **Document Attachments**: Attach up to 10 original files, 50 MiB each, including PDF, DOCX and XLSX. Originals stay in the workspace; extracted text and bounded image derivatives avoid oversized chat payloads.
 - **Git Worktree Support**: Create, switch, and manage Git worktrees directly from the sidebar; sessions and file roots stay grouped by project.
@@ -337,38 +336,6 @@ host (KDE Plasma, and most Wayland/X11 desktops).
 - **Web-based Settings** (10 tabs): Interface & Behavior, Safety & Approvals, AI Model Defaults, API Keys & Providers, Usage, Agent & Intelligence (advisor, memory, compaction), Agents, Extensions & Tools (MCP, skills, plugins), Notifications, System & Updates.
 - **Slash Commands & Shortcuts**: Quick prompts (`/plan`, `/review`, `/fix`, `/test`, etc.), `⌘K` / `Ctrl+K` palette, and model/reasoning cycling.
 - **UI Themes & Localization**: Warm paper light/dark themes plus an omp.sh-inspired midnight (`omp`) theme, chat font size & interface scale, with full English, Chinese (简体中文), and Japanese (日本語) translations.
-
-## Full-text search
-
-Search is literal and case-insensitive. It reads complete active and archived
-messages (including tool output), readable text/code/CSV files, PDF pages, DOCX
-paragraphs/tables, and XLSX sheets/rows. Archives open read-only; active message
-matches open the exact original entry without changing the conversation branch.
-Credential files, agent configuration, Git internals, dependency directories
-(`node_modules`, `vendor`, `target`, `.gopath`, …) and symbolic links are
-excluded. Unreadable sources produce visible partial-result warnings. Results
-are paginated in groups of 50.
-
-Search reads a persistent index rather than the transcripts: each source is
-parsed once into `search/index.sqlite` under omp-web's data directory, and
-re-parsed only when its modification time or size changes. The first search
-builds that index and shows file progress in the dialog; later searches only
-process changed files. The index is a cache — deleting it is safe and it
-rebuilds on the next search. Indexing retains one complete JSONL entry at a
-time, so memory is proportional to the largest entry, not the full transcript.
-Removed sources and files that become binary lose both their cached sections
-and their FTS entries. Symbolic links are excluded even when the managed
-project root itself is a link.
-
-Plain text and code files are read in-process, chunked at 16 KiB with a 255
-character overlap so a match across a chunk border is still found; only PDF,
-DOCX and XLSX go through the document extractor. The searchable text is stored
-once and indexed by a trigram FTS5 table. Only non-NUL ASCII trigrams from the
-original query are used as a conservative prefilter; matches are verified with
-the same Unicode case-insensitive literal regex. Queries without a safe
-trigram scan the stored text instead, so Greek case variants and astral
-characters are not lost to tokenizer or UTF-16 differences. Refresh time
-depends on the number of managed files as well as changed content.
 
 ## Image generation
 

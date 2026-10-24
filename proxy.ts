@@ -14,9 +14,7 @@ export function proxy(request: NextRequest) {
   // Refuse direct API access rather than spawning a second owner for a session.
   // /api/provider-usage is the exception: it only shells out to `omp usage`,
   // owns no session, and its balance normalization lives in this deployment's
-  // source rather than in the compiled server package. The search endpoints
-  // are read-only views of the transcripts and the project files this
-  // deployment already serves, and they own no agent session either.
+  // source rather than in the compiled server package.
   // /api/image-generation is the same kind of endpoint: it shells out to
   // `omp` for the subscription catalog and writes the generated files into
   // the project this deployment already serves. /api/attachments stores the
@@ -25,9 +23,6 @@ export function proxy(request: NextRequest) {
     process.env.OMP_WEB_FRONTEND_ONLY === "1"
     && request.nextUrl.pathname.startsWith("/api/")
     && request.nextUrl.pathname !== "/api/provider-usage"
-    && request.nextUrl.pathname !== "/api/search"
-    && request.nextUrl.pathname !== "/api/search/preview"
-    && request.nextUrl.pathname !== "/api/search/status"
     && request.nextUrl.pathname !== "/api/image-generation"
     && request.nextUrl.pathname !== "/api/attachments"
   ) {

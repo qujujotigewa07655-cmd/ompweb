@@ -1843,7 +1843,6 @@ export function AppShell({ appName }: { appName: string }) {
       settingsOpen={Boolean(settingsTab)}
       onOpenSettings={handleToggleSettings}
       onOpenArchive={handleOpenArchive}
-      onOpenFile={handleOpenLinkedFile}
       navigation={sidebarNavigation}
       updateAvailable={Boolean(appUpdate?.updateAvailable) || ompUpdateAvailable}
       onClose={isMobile ? handleSidebarToggle : undefined}

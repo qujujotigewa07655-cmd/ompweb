@@ -13,7 +13,6 @@ const jiti = createJiti(import.meta.url, {
 const { ChatWindow, renderActivityPieces } = await jiti.import("./ChatWindow.tsx");
 const { selectSessionHistory } = await jiti.import("@/lib/session-sync");
 const { setDraft, getDraft, clearDraft } = await jiti.import("@/lib/draft-store");
-const { navigateToSearchMessage, clearSearchMessageTarget } = await jiti.import("@/lib/full-text-search-navigation");
 const { translate } = await jiti.import("@/lib/i18n");
 
 const call = (id, name = "bash") => ({ type: "toolCall", toolCallId: id, toolName: name, input: { command: id } });
@@ -109,8 +108,6 @@ beforeEach(() => {
         value = init.method === "POST" ? { success: true, data: {} } : fixture.agent;
       } else if (parsed.pathname === "/api/github-repo") {
         value = { repo: null };
-      } else if (parsed.pathname === "/api/search/preview") {
-        value = { text: "Provider unavailable", offset: 0, previousOffset: null, nextOffset: null };
       } else {
         return Response.json({}, { status: 404 });
       }
@@ -134,7 +131,6 @@ afterEach(() => {
   cleanup();
   if (fixture) {
     clearDraft(fixture.id);
-    clearSearchMessageTarget(fixture.id);
   }
   for (const restore of restoreBrowser) restore();
   localStorage.clear();
@@ -224,8 +220,8 @@ test("recovery is absent without an input ref, during a local run, and during co
   }
 });
 
-test("branch, precompaction, and search views hide recovery", async () => {
-  for (const mode of ["branch", "precompaction", "search"]) {
+test("branch and precompaction views hide recovery", async () => {
+  for (const mode of ["branch", "precompaction"]) {
     const messages = [{ role: "custom", customType: "compaction", content: "Compacted", display: true }, USER, FAILURE];
     const view = await mountWindow(messages);
     assert.ok(view.getByRole("button", { name: CHOOSE_MODEL }));
@@ -234,19 +230,16 @@ test("branch, precompaction, and search views hide recovery", async () => {
     } else if (mode === "precompaction") {
       fireEvent.click(view.getByRole("button", { name: translate("chatWindow.viewPreCompactionHistory") }));
       await waitFor(() => assert.ok(view.queryByRole("button", { name: translate("chatWindow.returnToCompactHistory") })));
-    } else {
-      act(() => navigateToSearchMessage({ session: { id: fixture.id }, source: "session", section: 0, offset: 0, kind: "session", title: "Failure", location: "Saved message" }, "Provider"));
     }
     assert.equal(view.queryByRole("button", { name: CHOOSE_MODEL }), null);
     view.unmount();
-    clearSearchMessageTarget(fixture.id);
     clearDraft(fixture.id);
   }
 });
 
 test("external activity is explicitly inferred and hidden in historical and local-run views", async () => {
   const messages = [USER, assistant([call("pending")])];
-  for (const mode of ["active", "branch", "precompaction", "search", "local", "compacting"]) {
+  for (const mode of ["active", "branch", "precompaction", "local", "compacting"]) {
     const context = [{ role: "custom", customType: "compaction", content: "Compacted", display: true }, ...messages];
     const agent = mode === "local"
       ? { running: true, state: { isStreaming: true } }
@@ -257,13 +250,10 @@ test("external activity is explicitly inferred and hidden in historical and loca
     } else if (mode === "precompaction") {
       fireEvent.click(view.getByRole("button", { name: translate("chatWindow.viewPreCompactionHistory") }));
       await waitFor(() => assert.ok(view.queryByRole("button", { name: translate("chatWindow.returnToCompactHistory") })));
-    } else if (mode === "search") {
-      act(() => navigateToSearchMessage({ session: { id: fixture.id }, source: "session", section: 0, offset: 0, kind: "session", title: "Tool call", location: "Saved message" }, "pending"));
     }
     const status = view.queryAllByRole("status").find((node) => node.textContent === EXTERNAL_STATUS);
     assert.equal(!!status, mode === "active", mode);
     view.unmount();
-    clearSearchMessageTarget(fixture.id);
     clearDraft(fixture.id);
   }
 });
