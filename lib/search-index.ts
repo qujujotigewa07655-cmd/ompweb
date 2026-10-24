@@ -67,6 +67,8 @@ declare global {
   var __ompSearchIndexProjectsAt: number | undefined;
   var __ompSearchIndexTimer: ReturnType<typeof setInterval> | undefined;
   var __ompSearchIndexRoots: { roots: string[]; at: number } | undefined;
+  /** The managed roots the last project pass walked, to notice a newly added one. */
+  var __ompSearchIndexWalkedRoots: string | undefined;
 }
 
 export function publicProjectPath(filePath: string, configRoots: readonly string[] = getConfigAgentRoots()): boolean {
@@ -743,6 +745,12 @@ async function syncSources(options: { messages: boolean; projects: boolean; sign
     warningCount += written.warningCount;
   }
   await withWriteLock(() => pruneMissing(scan));
+  if (options.projects) {
+    // Remember which roots this pass walked. A new project added afterwards is
+    // not in the index yet, and a search must not report a complete negative
+    // for it until the next timer tick.
+    globalThis.__ompSearchIndexWalkedRoots = [...await projectRoots()].sort().join("\n");
+  }
   return {
     warnings: warnings.slice(0, 20),
     warningCount,
@@ -797,6 +805,22 @@ async function fullPass(options: { projects: boolean }): Promise<SyncResult> {
  * queueing one walk per search.
  */
 export async function ensureSearchIndex(): Promise<SyncResult> {
+  const result = await ensureMessageIndex();
+  // A project added since the last project pass has nothing in the index, and
+  // the timer may not reach it for minutes — while a search is exactly when the
+  // user asks about it. Walk then, rather than answering "no matches" for
+  // content that exists. Checked after the message pass so the index progress
+  // still starts synchronously, and only a *changed root list* triggers it: an
+  // ordinary search keeps skipping the hundred thousand project paths.
+  const walked = globalThis.__ompSearchIndexWalkedRoots;
+  if (walked !== undefined && (await projectRoots()).slice().sort().join("\n") !== walked) {
+    return ensureProjectRefresh();
+  }
+  return result;
+}
+
+/** The message half of a search's refresh; project files are excluded. */
+async function ensureMessageIndex(): Promise<SyncResult> {
   const arrivedAt = globalThis.__ompSearchIndexGeneration ?? 0;
   for (;;) {
     const running = globalThis.__ompSearchIndexQueued;
