@@ -63,6 +63,7 @@ declare global {
   var __ompChatDrafts: Map<string, ChatDraft> | undefined;
   var __ompChatDraftListeners: Set<() => void> | undefined;
   var __ompChatDraftRecoveryListeners: Set<(key: string, recovery: DraftRecovery) => void> | undefined;
+  var __ompChatDraftSentTexts: Map<string, string> | undefined;
 }
 
 const MAX_DRAFTS = 50;
@@ -101,6 +102,29 @@ function readStoredDrafts(): Map<string, ChatDraft> {
 
 const listeners = (globalThis.__ompChatDraftListeners ??= new Set<() => void>());
 const recoveryListeners = (globalThis.__ompChatDraftRecoveryListeners ??= new Set<(key: string, recovery: DraftRecovery) => void>());
+/**
+ * The text each key was last sent with. A composer leaving such a key must clear
+ * it instead of saving that text back: the send already cleared the draft, but
+ * the composer can still show the sent text while its key changes (the first
+ * send of a new chat creates the session and remounts the composer), and saving
+ * it made the next new chat of the same project open with an already-sent
+ * prompt. Module scope, because the composer that sends is not always the
+ * instance that observes the key change. Text is compared rather than a flag
+ * kept, so a draft the user edited after sending is still saved.
+ */
+const sentTexts = (globalThis.__ompChatDraftSentTexts ??= new Map<string, string>());
+
+/** Record what `key`'s draft was sent as. */
+export function markDraftSent(key: string, text: string): void {
+  sentTexts.set(key, text);
+}
+
+/** The text `key` was last sent with, if any; clears the record. */
+export function takeSentText(key: string): string | undefined {
+  const text = sentTexts.get(key);
+  sentTexts.delete(key);
+  return text;
+}
 
 export function hasUnsentDrafts(): boolean {
   return drafts.size > 0;

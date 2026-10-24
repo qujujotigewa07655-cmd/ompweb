@@ -2,7 +2,7 @@ import "../tests/setup-dom.mjs";
 import assert from "node:assert/strict";
 import test, { afterEach, beforeEach } from "node:test";
 import React, { act } from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react/pure.js";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react/pure.js";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createJiti } from "jiti";
 import { JSDOM } from "jsdom";
@@ -502,4 +502,40 @@ test("imperative model picker follows native busy, loading, and availability gua
   }));
   act(() => ref.current.openModelPicker());
   assert.ok(screen.getByRole("menuitemradio", { name: /Other model/ }));
+});
+
+// The first send of a new chat creates the session. ChatWindow then remounts the
+// composer with the session id, so the composer the user typed in is replaced
+// while `onSend` is still pending. That predecessor leaves its key with the sent
+// text still in state; saving it back made the next new chat of the same project
+// open with a prompt that had already been sent.
+test("a first send does not leave its prompt on the new-chat draft key", async () => {
+  const newChatKey = "new:/workspace-draft-send";
+  const sessionKey = "draft-send-created-session";
+  clearDraft(newChatKey);
+  clearDraft(sessionKey);
+  const accepted = Promise.withResolvers();
+  const view = render(React.createElement(ChatInput, {
+    draftKey: newChatKey,
+    isStreaming: false,
+    onSend: () => accepted.promise,
+  }));
+  try {
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Sent once" } });
+    assert.equal(getDraft(newChatKey)?.value, "Sent once", "typing persists the draft under the new-chat key");
+    fireEvent.click(screen.getByRole("button", { name: translate("chatInput.send") }));
+    // The session shows up while the send is still in flight: a fresh composer
+    // mounts with the session id, and the old one unmounts.
+    view.rerender(React.createElement(ChatInput, { draftKey: sessionKey, isStreaming: false, onSend: () => Promise.resolve(true) }));
+    view.unmount();
+    await act(async () => { accepted.resolve(true); });
+    assert.equal(getDraft(newChatKey), null, "the sent prompt must not stay on the new-chat draft key");
+    const next = render(React.createElement(ChatInput, { draftKey: newChatKey, isStreaming: false, onSend() {} }));
+    try {
+      assert.equal(screen.getByRole("textbox").value, "", "the next new chat of that project opens empty");
+    } finally { next.unmount(); }
+  } finally {
+    clearDraft(newChatKey);
+    clearDraft(sessionKey);
+  }
 });

@@ -15,7 +15,7 @@ import type { SttAfter } from "@/lib/stt";
 import { formatCompactNumber, formatPercent } from "@/lib/format";
 import { ContextDetailPanel } from "./ComposerPanels";
 import { RecordingDeck } from "./RecordingDeck";
-import { clearDraft, getDraft, mergeRecoveredText, recoverDraft, setDraft, subscribeDraftRecovery, type ChatDraftImage } from "@/lib/draft-store";
+import { clearDraft, getDraft, markDraftSent, mergeRecoveredText, recoverDraft, setDraft, subscribeDraftRecovery, takeSentText, type ChatDraftImage } from "@/lib/draft-store";
 import { expandWebSlashCommand } from "@/lib/web-slash-commands";
 import type { AttachedImage, AttachedTextFile } from "./ChatInput-draft-attachments";
 import {
@@ -743,7 +743,14 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     setQueuedDeleteTarget(null);
 
     if (previousDraftKey) {
-      setDraft(previousDraftKey, {
+      // Leaving a key the user just sent from must not save that text back: the
+      // send cleared it, and the composer may still show it while the key moves
+      // to the session the send created. Text edited after the send differs from
+      // what was sent, so a real draft is still kept.
+      const sentText = takeSentText(previousDraftKey);
+      if (sentText !== undefined && valueRef.current === sentText
+        && attachedImagesRef.current.length === 0 && attachedTextFilesRef.current.length === 0) clearDraft(previousDraftKey);
+      else setDraft(previousDraftKey, {
         value: valueRef.current,
         images: attachedImagesRef.current.map(imageToDraftImage),
         files: attachedTextFilesRef.current.map(textFileToDraftFile),
@@ -902,16 +909,34 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       const originalImages = attachedImagesRef.current;
       const files = attachedTextFilesRef.current;
       const revision = attachmentRevisionRef.current;
+      // Claim this draft as sent before awaiting the send: accepting the first
+      // prompt of a new chat creates the session, which remounts this composer
+      // with the session id. That remount's key-change effect observes the key
+      // and must know the text is already sent, or it saves the still-shown text
+      // back and the next new chat of the same project opens with it.
+      markDraftSent(key, text);
       // Hydration opens a window in which a run can start elsewhere and the
       // hook then refuses the prompt. Only an accepted send may clear the
       // draft: every edit persists it, so a refusal needs no restore of its own.
       if ((await onSend(composedMessage, images.length ? images : undefined)) === false) {
+        // Refused: this text is still the user's draft, so let it be saved.
+        takeSentText(key);
         setAttachError(t("chatInput.sendNotStarted"));
         return;
       }
-      if (draftKeyRef.current === key && valueRef.current === text
-        && attachedImagesRef.current === originalImages && attachedTextFilesRef.current === files
-        && attachmentRevisionRef.current === revision && attachmentWorkRef.current.count === 0) clearInput();
+      // Clear the composer too, even though a first send has already moved the
+      // key to the new session id: leaving the sent text in place let the
+      // persistence effect save it back, and the next new chat of the same
+      // project then opened with a prompt that had already been sent. The
+      // captured values still guard real edits — anything typed or attached
+      // during the send keeps the draft. The attachment revision only matters
+      // while the key is unchanged: the key change itself cancels pending
+      // attachment reads, so it would always look like an edit.
+      const editedDuringSend = valueRef.current !== text
+        || attachedImagesRef.current !== originalImages || attachedTextFilesRef.current !== files;
+      const keyChanged = draftKeyRef.current !== key;
+      const attachmentWorkDone = keyChanged || (attachmentRevisionRef.current === revision && attachmentWorkRef.current.count === 0);
+      if (!editedDuringSend && attachmentWorkDone) clearInput();
     });
   }, [value, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock, rejectsOversizedPrompt, runBuiltinCommand, sendSideQuestion, dispatchWithImages, t]);
   const {

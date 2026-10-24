@@ -39,7 +39,7 @@ import {
   restoreScrollTop,
   VISIBLE_PAGE_SIZE,
 } from "@/lib/chat-lazy-load";
-import { getDraftSummary } from "@/lib/draft-store";
+import { getDraftSummary, subscribeDrafts } from "@/lib/draft-store";
 import { createOmpUiActionHandler, type OmpUiActionScope } from "@/lib/omp-ui-actions";
 
 interface Props {
@@ -1865,7 +1865,12 @@ const MinimizedComposerBar = memo(function MinimizedComposerBar({ draftKey, isSt
 }) {
   const { t } = useI18n();
 
-  /* Read draft summary for preview without cloning attachment payloads */
+  /* Read draft summary for preview without cloning attachment payloads. The
+     store is not reactive on its own: a draft recovered while the composer is
+     minimized (a refused send, a withdrawn queue) must reach this bar, so it
+     subscribes and re-reads on every change. */
+  const [, setDraftRevision] = useState(0);
+  useEffect(() => subscribeDrafts(() => setDraftRevision((revision) => revision + 1)), []);
   const summary = draftKey ? getDraftSummary(draftKey) : null;
   const draftText = summary?.text?.trim() || null;
   const hasAttachments = summary?.hasAttachments ?? false;
