@@ -70,6 +70,22 @@ export async function register(): Promise<void> {
     }
   })();
 
+  // Warm the search index in the background so a cold index does not hide
+  // project files from the first searches: walking the managed trees takes ~4 s
+  // cold on this install. Frontend-only mode serves the search endpoints too
+  // (see proxy.ts), so it warms as well — this block only reads transcripts and
+  // project files and owns no agent session. Fire-and-forget: a failed warm-up
+  // is retried by the refresh timer.
+  void (async () => {
+    try {
+      const { ensureProjectRefresh } = await import("@/lib/search-index");
+      await ensureProjectRefresh();
+      console.log("[omp-web] search index warm");
+    } catch (error) {
+      console.warn(`[omp-web] search index warm-up failed (searches still work): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  })();
+
   // Crash/stall journal: a long-running server that dies or wedges while the
   // user is away leaves no trace in a terminal that no longer exists (CLI runs
   // are killed with their terminal; pages then show endless loading until the

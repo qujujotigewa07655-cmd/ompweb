@@ -34,8 +34,11 @@ const FTS_MAX_SECTION = 1_000_000;
 const CHUNK = 16_384;
 /** Characters of the previous chunk repeated in the next one, so matches across a chunk border stay findable. */
 const OVERLAP = 255;
-/** How long a project-file refresh may lag behind the file system. */
-const PROJECT_REFRESH_MS = 30_000;
+/** How long a project-file refresh may lag behind the file system. A walk over
+ * 112 558 managed paths costs ~4 s cold and ~1 s with the page cache warm on
+ * this install, so refreshing every 30 s spent a fifth of the CPU on stat-ing
+ * unchanged files. */
+const PROJECT_REFRESH_MS = 5 * 60_000;
 /** How long the list of managed project roots is reused. */
 const ROOTS_TTL_MS = 60_000;
 // 7: rebuild stale plain-text chunks left by skipped whitespace, and keep
@@ -470,9 +473,20 @@ export function indexStatus(): IndexStatus {
   return { ...state() };
 }
 
-/** Run a project-file refresh now and wait for it; used by the index test. */
-export async function ensureProjectRefresh(): Promise<void> {
-  await fullPass();
+/**
+ * Run a project-file refresh now and wait for it; used by the index test, the
+ * boot warm-up and the refresh timer. A second caller joins the pass that is
+ * already running instead of queueing another walk over the same trees.
+ */
+export async function ensureProjectRefresh(): Promise<SyncResult> {
+  const running = globalThis.__ompSearchIndexPass;
+  if (running) return running;
+  const pass = fullPass({ projects: true }).finally(() => {
+    if (globalThis.__ompSearchIndexPass === pass) globalThis.__ompSearchIndexPass = undefined;
+  });
+  globalThis.__ompSearchIndexPass = pass;
+  pass.catch(() => {});
+  return pass;
 }
 
 /**
@@ -483,8 +497,7 @@ function scheduleProjectRefresh(): void {
   if (globalThis.__ompSearchIndexTimer) return;
   globalThis.__ompSearchIndexTimer = setInterval(() => {
     if (!globalThis.__ompSearchIndexWarm || globalThis.__ompSearchIndexPass) return;
-    globalThis.__ompSearchIndexPass = fullPass().finally(() => { globalThis.__ompSearchIndexPass = undefined; });
-    globalThis.__ompSearchIndexPass.catch(() => {});
+    void ensureProjectRefresh().catch(() => {});
   }, PROJECT_REFRESH_MS);
   globalThis.__ompSearchIndexTimer.unref?.();
 }
@@ -502,18 +515,41 @@ async function withWriteLock<T>(run: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/**
- * Parse the sources that changed since the last pass and drop the ones that
- * disappeared. `messages` covers the few thousand session and archive files
- * that a search must see immediately; `projects` covers the hundreds of
- * thousands of project files that are refreshed in the background.
- */
-async function syncSources(options: { messages: boolean; projects: boolean; signal?: AbortSignal }): Promise<SyncResult> {
-  return withWriteLock(() => writeSources(options));
-}
+/** One source a pass decided to (re)parse, with the stat that justified it. */
+type PlannedSource = {
+  kind: FullTextSearchResult["kind"]; source: string; filePath: string; title: string;
+  mtimeMs: number; size: number;
+  /** Classified as non-text: record the stat, keep no sections. */
+  binary: boolean;
+};
 
-async function writeSources(options: { messages: boolean; projects: boolean; signal?: AbortSignal }): Promise<SyncResult> {
-  const db = database();
+/**
+ * What a pass found, gathered without the write lock and without a SQLite
+ * transaction. Walking the trees is the slow half of a pass (112 558 paths:
+ * ~4 s cold, ~1 s warm); `BEGIN IMMEDIATE` used to span that walk, so a search
+ * waited for it and a second server process on the same index failed with
+ * `database is locked` once `busy_timeout` ran out.
+ */
+type PassScan = {
+  /** Only the sources whose stat changed, so a quiet pass writes nothing. */
+  planned: PlannedSource[];
+  /** Every path this pass's walks reached, whatever its stat. */
+  present: Set<string>;
+  /** Stored rows of exactly the kinds this pass refreshes. */
+  known: Map<string, KnownFile>;
+  /** Directories a walk could not read: their rows were never proven absent. */
+  unwalked: string[];
+  warnings: string[];
+  warningCount: number;
+};
+
+/**
+ * Read-only half of a pass: walk the sources, compare each stat with the stored
+ * one, and report what changed. `messages` covers the few thousand session and
+ * archive files that a search must see immediately; `projects` covers the
+ * hundred thousand project files refreshed in the background.
+ */
+async function scanSources(options: { messages: boolean; projects: boolean; signal?: AbortSignal }): Promise<PassScan> {
   const current = state();
   const warnings: string[] = [];
   let warningCount = 0;
@@ -521,20 +557,89 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
     warningCount++;
     if (warnings.length < 20) warnings.push(`${title}: ${error instanceof Error ? error.message : "Search failed"}`);
   };
+  // A failed directory is not a deleted one. Keep it so the prune in the write
+  // half cannot drop rows that a walk merely failed to reach.
+  const unwalked: string[] = [];
+  const warnWalk: SourceWarning = (title, error) => { unwalked.push(title); warn(title, error); };
   // Only the rows of the kinds this pass refreshes are loaded: the project
   // files are tens of thousands of rows a message pass never looks at.
   const known = new Map<string, KnownFile>();
   const kinds = options.projects ? ["message", "archive", "file"] : ["message", "archive"];
+  const db = database();
   const readKnown = db.prepare(`SELECT path, mtime_ms, size, error FROM files WHERE kind IN (${kinds.map(() => "?").join(",")})`);
   for (const row of readKnown.all(...kinds) as Array<{ path: string; mtime_ms: number; size: number; error: string | null }>) {
     known.set(row.path, { mtime: row.mtime_ms, size: row.size, error: row.error });
   }
+
+  const planned: PlannedSource[] = [];
+  const present = new Set<string>();
+  let done = 0;
+
+  if (options.messages) {
+    for (const [kind, root, extension] of [
+      ["message", getSessionsDir(), ".jsonl"], ["archive", getArchivedSessionsDir(), ".jsonl.gz"],
+    ] as const) {
+      for await (const file of walkFiles(root, { project: false, signal: options.signal, onWarning: warnWalk })) {
+        options.signal?.throwIfAborted();
+        if (!file.filePath.endsWith(extension)) continue;
+        present.add(file.filePath);
+        current.done = ++done;
+        const relative = path.relative(root, file.filePath).split(path.sep).join("/");
+        const title = path.basename(file.filePath);
+        const prior = known.get(file.filePath);
+        if (prior && prior.mtime === file.mtimeMs && prior.size === file.size) {
+          // The content is already stored; only a stored failure is worth repeating.
+          if (prior.error) warn(title, new Error(prior.error));
+          continue;
+        }
+        planned.push({ kind, source: `${kind}:${relative}`, filePath: file.filePath, title, mtimeMs: file.mtimeMs, size: file.size, binary: false });
+      }
+    }
+  }
+  if (options.projects) {
+    for (const root of await projectRoots()) {
+      for (const file of await projectFiles(root, { signal: options.signal, onWarning: warnWalk })) {
+        options.signal?.throwIfAborted();
+        present.add(file.filePath);
+        current.done = ++done;
+        const title = path.relative(root, file.filePath);
+        const prior = known.get(file.filePath);
+        if (prior && prior.mtime === file.mtimeMs && prior.size === file.size) {
+          if (prior.error) warn(title, new Error(prior.error));
+          continue;
+        }
+        try {
+          const text = await readable(file.filePath);
+          planned.push({ kind: "file", source: `file:${file.filePath}`, filePath: file.filePath, title, mtimeMs: file.mtimeMs, size: file.size, binary: !text });
+        } catch (error) {
+          options.signal?.throwIfAborted();
+          warn(title, error);
+        }
+      }
+    }
+  }
+  return { planned, present, known, unwalked, warnings, warningCount };
+}
+
+/**
+ * Write one batch of planned sources. Each batch is its own transaction, so the
+ * database writer is released between batches and a search never waits for the
+ * whole cold pass.
+ */
+async function writeSources(planned: readonly PlannedSource[]): Promise<{ warnings: string[]; warningCount: number }> {
+  const db = database();
+  const warnings: string[] = [];
+  let warningCount = 0;
+  const warn: SourceWarning = (title, error) => {
+    warningCount++;
+    if (warnings.length < 20) warnings.push(`${title}: ${error instanceof Error ? error.message : "Search failed"}`);
+  };
   const removeFile = db.prepare("DELETE FROM files WHERE path = ?");
   const removeSections = db.prepare("DELETE FROM sections WHERE path = ?");
   const insertFile = db.prepare("INSERT OR REPLACE INTO files (path, src, kind, mtime_ms, size, error) VALUES (?, ?, ?, ?, ?, ?)");
   const insertSection = db.prepare("INSERT INTO sections (path, src, kind, sec, loc, entry_id, title, session, file_path, overlap, fts_ok, line_base, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   // Trigram insertion one row at a time is far slower than a bulk select, so
-  // rows are appended to the FTS table in batches after each commit instead.
+  // rows are appended to the FTS table in bulk after the transaction instead.
   const indexPending = db.prepare("INSERT INTO sections_fts(rowid, text) SELECT id, text FROM sections WHERE fts_ok = 1 AND id > ? ORDER BY id");
   const removeIndex = db.prepare("DELETE FROM sections_fts WHERE rowid IN (SELECT id FROM sections WHERE path = ? AND fts_ok = 1)");
   const removeSource = (filePath: string) => {
@@ -554,88 +659,34 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
     writeCursor.run(next);
   };
 
-  const present = new Set<string>();
-  let pending = 0;
-  let done = 0;
   db.exec("BEGIN IMMEDIATE");
   try {
-    const handle = async (kind: FullTextSearchResult["kind"], source: string, filePath: string, title: string, mtimeMs: number, size: number) => {
-      current.done = ++done;
-      const prior = known.get(filePath);
-      if (prior && prior.mtime === mtimeMs && prior.size === size) {
-        if (prior.error) warn(title, new Error(prior.error));
-        return;
+    for (const file of planned) {
+      removeSource(file.filePath);
+      if (file.binary) {
+        // Keep the binary classification until the file changes again.
+        insertFile.run(file.filePath, `file:${file.filePath}`, "file", file.mtimeMs, file.size, null);
+        continue;
       }
-      removeSource(filePath);
       let section = 0;
       try {
-        for await (const part of readSections({ kind, source, filePath, title })) {
+        for await (const part of readSections({ kind: file.kind, source: file.source, filePath: file.filePath, title: file.title })) {
           insertSection.run(
-            filePath, source, kind, section++, part.location, part.entryId ?? null,
-            part.session?.name || title, part.session ? JSON.stringify(part.session) : null,
-            kind === "file" ? filePath : null, part.overlap ?? 0,
+            file.filePath, file.source, file.kind, section++, part.location, part.entryId ?? null,
+            part.session?.name || file.title, part.session ? JSON.stringify(part.session) : null,
+            file.kind === "file" ? file.filePath : null, part.overlap ?? 0,
             part.text.length <= FTS_MAX_SECTION && !part.text.includes("\0") ? 1 : 0, part.lineBase ?? null, part.text,
           );
         }
       } catch (error) {
         // Keep the failure on record so the next pass does not retry a file
         // that cannot be parsed, and report it as a partial-coverage warning.
-        removeSource(filePath);
-        insertFile.run(filePath, source, kind, mtimeMs, size, error instanceof Error ? error.message : "Search failed");
-        warn(title, error);
-        return;
+        removeSource(file.filePath);
+        insertFile.run(file.filePath, file.source, file.kind, file.mtimeMs, file.size, error instanceof Error ? error.message : "Search failed");
+        warn(file.title, error);
+        continue;
       }
-      insertFile.run(filePath, source, kind, mtimeMs, size, null);
-      if (++pending >= 200) { db.exec("COMMIT"); advanceIndex(); db.exec("BEGIN IMMEDIATE"); pending = 0; }
-    };
-
-    if (options.messages) {
-      for (const [kind, root, extension] of [
-        ["message", getSessionsDir(), ".jsonl"], ["archive", getArchivedSessionsDir(), ".jsonl.gz"],
-      ] as const) {
-        for await (const file of walkFiles(root, { project: false, signal: options.signal, onWarning: warn })) {
-          options.signal?.throwIfAborted();
-          if (!file.filePath.endsWith(extension)) continue;
-          present.add(file.filePath);
-          const relative = path.relative(root, file.filePath).split(path.sep).join("/");
-          await handle(kind, `${kind}:${relative}`, file.filePath, path.basename(file.filePath), file.mtimeMs, file.size);
-        }
-      }
-    }
-    if (options.projects) {
-      for (const root of await projectRoots()) {
-        for (const file of await projectFiles(root, { signal: options.signal, onWarning: warn })) {
-          options.signal?.throwIfAborted();
-          present.add(file.filePath);
-          try {
-            // Unchanged files keep their parsed content and readability result.
-            const prior = known.get(file.filePath);
-            if (prior && prior.mtime === file.mtimeMs && prior.size === file.size) {
-              // The file is unchanged, so its content — and whether it is
-              // readable text — is already known.
-              if (prior.error) warn(path.relative(root, file.filePath), new Error(prior.error));
-              continue;
-            }
-            if (!(await readable(file.filePath))) {
-              // Keep the binary classification until the file changes again.
-              removeSource(file.filePath);
-              insertFile.run(file.filePath, `file:${file.filePath}`, "file", file.mtimeMs, file.size, null);
-              continue;
-            }
-            await handle("file", `file:${file.filePath}`, file.filePath, path.relative(root, file.filePath), file.mtimeMs, file.size);
-          } catch (error) {
-            options.signal?.throwIfAborted();
-            warn(path.relative(root, file.filePath), error);
-          }
-        }
-      }
-    }
-    // Both walks visit every eligible file, so absent sources are removed.
-    if (options.projects) {
-      for (const filePath of known.keys()) {
-        if (present.has(filePath)) continue;
-        removeSource(filePath);
-      }
+      insertFile.run(file.filePath, file.source, file.kind, file.mtimeMs, file.size, null);
     }
     db.exec("COMMIT");
     advanceIndex();
@@ -643,21 +694,82 @@ async function writeSources(options: { messages: boolean; projects: boolean; sig
     try { db.exec("ROLLBACK"); } catch { /* transaction already gone */ }
     throw error;
   }
-  current.indexed = Number((db.prepare("SELECT count(*) AS n FROM files").get() as { n?: number } | undefined)?.n ?? 0);
-  return { warnings, warningCount, projectsAt: globalThis.__ompSearchIndexProjectsAt ?? null };
+  return { warnings, warningCount };
 }
 
-async function fullPass(): Promise<SyncResult> {
+/**
+ * Drop the rows of this pass's kinds that its walks no longer reach. A walk
+ * that failed to read a directory proves nothing about the files under it, and
+ * neither does a row rewritten by another pass after this scan, so both keep
+ * their rows: `unwalked` names the first, the stored stat detects the second.
+ */
+async function pruneMissing(scan: PassScan): Promise<void> {
+  const db = database();
+  const storedStat = db.prepare("SELECT mtime_ms, size FROM files WHERE path = ?");
+  const removeFile = db.prepare("DELETE FROM files WHERE path = ?");
+  const removeSections = db.prepare("DELETE FROM sections WHERE path = ?");
+  const removeIndex = db.prepare("DELETE FROM sections_fts WHERE rowid IN (SELECT id FROM sections WHERE path = ? AND fts_ok = 1)");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const [filePath, known] of scan.known) {
+      if (scan.present.has(filePath)) continue;
+      if (scan.unwalked.some((dir) => filePath === dir || filePath.startsWith(dir + path.sep))) continue;
+      const row = storedStat.get(filePath) as { mtime_ms: number; size: number } | undefined;
+      if (!row || row.mtime_ms !== known.mtime || row.size !== known.size) continue;
+      // FTS rowids must be removed while the corresponding sections still exist.
+      removeIndex.run(filePath);
+      removeSections.run(filePath);
+      removeFile.run(filePath);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch { /* transaction already gone */ }
+    throw error;
+  }
+  const current = state();
+  current.indexed = Number((db.prepare("SELECT count(*) AS n FROM files").get() as { n?: number } | undefined)?.n ?? 0);
+}
+
+async function syncSources(options: { messages: boolean; projects: boolean; signal?: AbortSignal }): Promise<SyncResult> {
+  const scan = await scanSources(options);
+  const warnings = [...scan.warnings];
+  let warningCount = scan.warningCount;
+  // The writer is taken per batch, so a search queued behind a cold project pass
+  // gets in between batches instead of waiting for the whole pass.
+  for (let index = 0; index < scan.planned.length; index += 200) {
+    const batch = scan.planned.slice(index, index + 200);
+    const written = await withWriteLock(() => writeSources(batch));
+    warnings.push(...written.warnings);
+    warningCount += written.warningCount;
+  }
+  await withWriteLock(() => pruneMissing(scan));
+  return {
+    warnings: warnings.slice(0, 20),
+    warningCount,
+    projectsAt: globalThis.__ompSearchIndexProjectsAt ?? null,
+  };
+}
+
+/**
+ * One index pass. Project files are tens of thousands of paths: walking and
+ * stat-ing them costs ~1.2s on this install, so a search waits for messages
+ * only and the project walk runs at boot and on the refresh timer instead.
+ */
+async function fullPass(options: { projects: boolean }): Promise<SyncResult> {
   const current = state();
   current.phase = globalThis.__ompSearchIndexWarm ? "refreshing" : "building";
   current.done = 0;
   current.error = null;
   try {
-    const result = await syncSources({ messages: true, projects: true });
+    const result = await syncSources({ messages: true, projects: options.projects });
     globalThis.__ompSearchIndexWarm = true;
-    globalThis.__ompSearchIndexProjectsAt = Date.now();
-    current.projectsAt = globalThis.__ompSearchIndexProjectsAt;
+    if (options.projects) {
+      globalThis.__ompSearchIndexProjectsAt = Date.now();
+      current.projectsAt = globalThis.__ompSearchIndexProjectsAt;
+    }
     current.version++;
+    // Starts the project walk even when only messages were indexed, so a boot
+    // warm-up that never ran still converges within one refresh interval.
     scheduleProjectRefresh();
     return result;
   } catch (error) {
@@ -669,10 +781,14 @@ async function fullPass(): Promise<SyncResult> {
 }
 
 /**
- * Bring the index up to date for a search.
+ * Bring the message index up to date for a search.
  *
- * Every source is checked so a file written a moment ago is found by the next
- * search. Unchanged files reuse their stored sections.
+ * Every session and archive file is checked so a transcript written a moment
+ * ago is found by the next search. Unchanged files reuse their stored sections.
+ *
+ * Project files are deliberately out of this pass: walking ~117k paths costs
+ * over a second per search on this install. They are indexed at boot and on the
+ * refresh timer instead, so a project edit appears within PROJECT_REFRESH_MS.
  *
  * Concurrent searches share one walk instead of each starting their own. A
  * caller can only join a pass that *started after it arrived* — an older pass
@@ -691,7 +807,7 @@ export async function ensureSearchIndex(): Promise<SyncResult> {
       continue;
     }
     globalThis.__ompSearchIndexGeneration = (globalThis.__ompSearchIndexGeneration ?? 0) + 1;
-    const pass = fullPass();
+    const pass = fullPass({ projects: false });
     globalThis.__ompSearchIndexQueued = pass;
     const settle = () => {
       if (globalThis.__ompSearchIndexQueued === pass) globalThis.__ompSearchIndexQueued = undefined;
