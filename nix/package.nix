@@ -105,7 +105,6 @@ let
       ../instrumentation.ts
       ../instrumentation.node.ts
       ../next.config.ts
-      ../next-env.d.ts
       ../package.json
       ../package-lock.json
       ../postcss.config.mjs
@@ -130,7 +129,9 @@ buildNpmPackage (finalAttrs: {
     cp ${geist} app/fonts/Geist.ttf
   '';
 
-  npmDepsHash = "sha256-HxT+m6bI0I3t9sqsSgHun6oXve3WtIEmkFpCoBplrC4=";
+  # Must be refreshed whenever package-lock.json changes:
+  #   nix run nixpkgs#prefetch-npm-deps -- package-lock.json
+  npmDepsHash = "sha256-gMZ6nZuVK0yx3FdqoA39eakX9MeX0L0ixP3dfZClUr8=";
 
   # npmPackFlags = [ "--ignore-scripts" ];
 
