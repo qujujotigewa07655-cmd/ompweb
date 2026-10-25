@@ -88,6 +88,8 @@ const GET_STATE_TIMEOUT_MS = 5_000;
 const PROMPT_ACK_TIMEOUT_MS = 30_000;
 /** Title generation is an LLM call on omp's side. */
 const GENERATE_TITLE_TIMEOUT_MS = 60_000;
+/** Automatic title tries per conversation before it is left untitled. */
+const MAX_AUTO_TITLE_ATTEMPTS = 3;
 const RENAME_POLL_INTERVAL_MS = 500;
 const RENAME_POLL_TIMEOUT_MS = 20_000;
 const NON_TERMINAL_CONTINUATION_GRACE_MS = 2_000;
@@ -363,6 +365,8 @@ export class AgentSessionWrapper {
   private _sessionId = "";
   private _sessionFile = "";
   private _sessionName: string | undefined;
+  /** Automatic title attempts made for the current conversation (see maybeAutoTitle). */
+  private autoTitleAttempts = 0;
   private proc: RpcProcess;
   /** Process whose exit is expected because reload is deliberately disposing it. */
   private expectedExitProc: RpcProcess | null = null;
@@ -566,6 +570,7 @@ export class AgentSessionWrapper {
       this.continuationGraceUntil = 0;
       // A different conversation now: the old one's ids must not suppress its notifications.
       this.movedFromIds.length = 0;
+      this.autoTitleAttempts = 0;
     }
     this._sessionId = state.sessionId;
     this._sessionFile = state.sessionFile ?? "";
@@ -597,7 +602,7 @@ export class AgentSessionWrapper {
    * either right now (older omp, or the session is mid-run, where `/rename`
    * would be queued as a prompt).
    */
-  async generateTitle(): Promise<string | null> {
+  async generateTitle(options: { nativeOnly?: boolean } = {}): Promise<string | null> {
     if (this.restarting) throw new WebRpcError(RESTARTING_MESSAGE, "session_restarting");
     if (!this.isAlive()) throw new Error("Session is no longer running");
 
@@ -614,8 +619,9 @@ export class AgentSessionWrapper {
     }
 
     // `/rename` without arguments generates a title (omp >= 18.6). It is a
-    // prompt, so it must never be sent while a run is in flight.
-    if (this.isRunning()) return null;
+    // prompt, so it must never be sent while a run is in flight, and an
+    // automatic attempt never sends it: it would show up in the chat.
+    if (options.nativeOnly || this.isRunning()) return null;
     const before = (await this.readSessionName()) ?? "";
     await this.send({ type: "prompt", message: "/rename" });
     const deadline = Date.now() + RENAME_POLL_TIMEOUT_MS;
@@ -626,6 +632,29 @@ export class AgentSessionWrapper {
     }
     if (title) this.adoptSessionName(title);
     return title;
+  }
+
+  /**
+   * omp turns its own automatic titles off in rpc-ui mode (PI_NO_TITLE), so a
+   * session started here would stay untitled. When a run ends and the session
+   * still has no name, ask omp for a title the way the "Generate title" button
+   * does. A few attempts per conversation; a failure leaves it untitled.
+   */
+  private maybeAutoTitle(): void {
+    if (this.autoTitleAttempts >= MAX_AUTO_TITLE_ATTEMPTS || this.restarting || !this.isAlive()) return;
+    this.autoTitleAttempts++;
+    void (async () => {
+      try {
+        if (await this.readSessionName()) {
+          this.autoTitleAttempts = MAX_AUTO_TITLE_ATTEMPTS;
+          return;
+        }
+        const title = await this.generateTitle({ nativeOnly: true });
+        if (title) this.autoTitleAttempts = MAX_AUTO_TITLE_ATTEMPTS;
+      } catch {
+        // The session stays untitled; the "Generate title" button still works.
+      }
+    })();
   }
 
   private async readSessionName(): Promise<string | null> {
@@ -739,6 +768,7 @@ export class AgentSessionWrapper {
           this.awaitingAgentStartDeadline = 0;
           this.continuationGraceUntil = 0;
           this.invalidateSessionLists();
+          this.maybeAutoTitle();
         } else {
           this.continuationGraceUntil = Date.now() + NON_TERMINAL_CONTINUATION_GRACE_MS;
         }

@@ -3610,6 +3610,19 @@ html[data-touch-targets="accessible"] .right-panel-toolbar {
     border-color: transparent;
     background: transparent;
   }
+  /* The title action is an 18px inline-styled icon: too small to hit with a thumb. */
+  .shell-topbar-title-action {
+    width: 32px !important;
+    height: 32px !important;
+    margin-left: 0 !important;
+  }
+  .shell-topbar-title-action:not(:disabled) {
+    opacity: 1 !important;
+  }
+  .shell-topbar-title-action svg {
+    width: 16px;
+    height: 16px;
+  }
   .shell-topbar-overflow[data-compact="true"] > .shell-topbar-overflow-content {
     left: 48px;
     right: 48px;

@@ -1723,7 +1723,7 @@ function ExtensionCustomPanel({
         style={{
           position: "relative",
           width: "min(920px, 100%)",
-          maxHeight: "min(760px, calc(100vh - 40px))",
+          maxHeight: "min(760px, calc(100dvh - 40px))",
           border: "1px solid var(--border)",
           borderRadius: 8,
           background: "var(--bg)",
@@ -1801,7 +1801,7 @@ function ExtensionCustomPanel({
           style={{
             margin: 0,
             padding: 14,
-            maxHeight: "calc(min(760px, 100vh - 40px) - 48px)",
+            maxHeight: "calc(min(760px, 100dvh - 40px) - 48px)",
             overflow: "auto",
             background: "var(--bg-panel)",
             color: "var(--text)",

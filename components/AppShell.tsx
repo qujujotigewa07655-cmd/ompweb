@@ -2308,7 +2308,7 @@ export function AppShell({ appName }: { appName: string }) {
                       disabled={wandDisabled}
                       title={wandTooltip}
                       aria-label={wandLabel}
-                      className="ui-focus-ring"
+                      className="shell-topbar-title-action ui-focus-ring"
                       style={{
                         display: "inline-flex",
                         alignItems: "center",
