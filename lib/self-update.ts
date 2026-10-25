@@ -298,6 +298,10 @@ export function getSelfUpdateSupport(): { supported: boolean; reason?: string; p
       ("private" in pkg && pkg.private !== false)) {
       return { supported: false, reason: "Automatic app updates are unavailable for private or non-upstream packages", packageDir };
     }
+    // A git checkout carries local commits; an npm install would replace them.
+    if (existsSync(join(packageDir, ".git"))) {
+      return { supported: false, reason: "Automatic app updates are unavailable for a git checkout; update it with git", packageDir };
+    }
     return { supported: true, packageDir: resolve(packageDir) };
   } catch {
     return { supported: false, reason: "unsupported", packageDir };
