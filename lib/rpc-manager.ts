@@ -367,6 +367,9 @@ export class AgentSessionWrapper {
   private _sessionName: string | undefined;
   /** Automatic title attempts made for the current conversation (see maybeAutoTitle). */
   private autoTitleAttempts = 0;
+  private autoTitleRunning = false;
+  /** Wait before the second automatic title try of a run; tests shorten it. */
+  autoTitleRetryMs = 4_000;
   private proc: RpcProcess;
   /** Process whose exit is expected because reload is deliberately disposing it. */
   private expectedExitProc: RpcProcess | null = null;
@@ -641,18 +644,27 @@ export class AgentSessionWrapper {
    * does. A few attempts per conversation; a failure leaves it untitled.
    */
   private maybeAutoTitle(): void {
-    if (this.autoTitleAttempts >= MAX_AUTO_TITLE_ATTEMPTS || this.restarting || !this.isAlive()) return;
+    if (this.autoTitleRunning || this.autoTitleAttempts >= MAX_AUTO_TITLE_ATTEMPTS || this.restarting || !this.isAlive()) return;
     this.autoTitleAttempts++;
+    this.autoTitleRunning = true;
     void (async () => {
       try {
-        if (await this.readSessionName()) {
-          this.autoTitleAttempts = MAX_AUTO_TITLE_ATTEMPTS;
-          return;
+        // omp may still be settling right after agent_end, so one try that fails
+        // is repeated after a short wait before the run is given up on.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, this.autoTitleRetryMs));
+          if (this.restarting || !this.isAlive() || this.isRunning()) return;
+          try {
+            if ((await this.readSessionName()) || (await this.generateTitle({ nativeOnly: true }))) {
+              this.autoTitleAttempts = MAX_AUTO_TITLE_ATTEMPTS;
+              return;
+            }
+          } catch (error) {
+            console.warn("[ompweb] automatic session title failed:", error instanceof Error ? error.message : error);
+          }
         }
-        const title = await this.generateTitle({ nativeOnly: true });
-        if (title) this.autoTitleAttempts = MAX_AUTO_TITLE_ATTEMPTS;
-      } catch {
-        // The session stays untitled; the "Generate title" button still works.
+      } finally {
+        this.autoTitleRunning = false;
       }
     })();
   }
