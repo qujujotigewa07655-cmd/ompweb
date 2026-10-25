@@ -226,6 +226,14 @@ hooks/
   argument-less `/rename`, never while a run is in flight). Only when omp cannot
   does it fall back to the stored/derived title (`generated:false`), saved
   through the live process when there is one.
+- Automatic naming after a run (`maybeAutoTitle()`) needs that same derived
+  fallback: the installed omp has **no** `generate_title` command, and its
+  argument-less `/rename` fails without a downloaded tiny title model
+  (`Could not generate a session title. Use /rename <title> to set one.`), so
+  `generateTitle({nativeOnly:true})` returns null on a stock install. Keep
+  `adoptDerivedTitle()` in the chain or new sessions stay untitled; it writes
+  through `set_session_name` when the child answers and otherwise rewrites the
+  fixed title slot with `source: "auto"`.
 
 ### Browser compatibility
 Client code (`components/`, `hooks/`) must not call `AbortSignal.timeout`,

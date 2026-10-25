@@ -23,6 +23,8 @@ import { isRecord } from "./type-guards";
 import { BLOCKING_UI_METHODS, createNotificationDetector } from "./notification-events";
 import { publishNotification } from "./notification-hub";
 import { parseSkillDiagnosticsSnapshot, type SkillDiagnosticsSnapshot } from "./skill-diagnostics";
+import { scanSessionInfo, setSessionTitle } from "./omp/session-files";
+import { deriveSessionTitleFromFirstMessage } from "./session-title";
 import { isReservedLaunchArg, loadProjectRegistry } from "./project-registry";
 import { eventWithToolResultImageUrls } from "./media-cache";
 import type {
@@ -655,7 +657,7 @@ export class AgentSessionWrapper {
           if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, this.autoTitleRetryMs));
           if (this.restarting || !this.isAlive() || this.isRunning()) return;
           try {
-            if ((await this.readSessionName()) || (await this.generateTitle({ nativeOnly: true }))) {
+            if ((await this.readSessionName()) || (await this.generateTitle({ nativeOnly: true })) || (await this.adoptDerivedTitle())) {
               this.autoTitleAttempts = MAX_AUTO_TITLE_ATTEMPTS;
               return;
             }
@@ -671,6 +673,9 @@ export class AgentSessionWrapper {
 
   private async readSessionName(): Promise<string | null> {
     const state = await this.getStateWithTimeout();
+    // Fill-only: a wrapper that has not seen a state snapshot yet still needs the
+    // file to name the session from its first message. Never clears a known one.
+    if (!this._sessionFile && state.sessionFile) this._sessionFile = state.sessionFile;
     const name = typeof state.sessionName === "string" ? state.sessionName.trim() : "";
     return name || null;
   }
@@ -679,6 +684,31 @@ export class AgentSessionWrapper {
     this._sessionName = title;
     this.invalidateSessionLists();
     notifyRunningChange({ refreshSessionList: true });
+  }
+
+  /**
+   * Name a session from its first user message when omp cannot generate one.
+   * The installed omp has no `generate_title` command, and an argument-less
+   * `/rename` needs a local tiny title model that may not be downloaded
+   * ("Could not generate a session title. Use /rename <title> to set one.").
+   * The "Generate title" button has always fallen back to this derived title;
+   * automatic naming needs the same fallback, or a new session stays untitled.
+   */
+  private async adoptDerivedTitle(): Promise<string | null> {
+    const file = this._sessionFile;
+    if (!file) return null;
+    const derived = deriveSessionTitleFromFirstMessage(scanSessionInfo(file, false)?.firstMessage);
+    if (!derived) return null;
+    try {
+      // A live process owns the file: renaming through it keeps its next flush
+      // from clobbering the slot. The on-disk write is the fallback for a child
+      // that cannot answer right now.
+      await this.send({ type: "set_session_name", name: derived });
+    } catch {
+      if (!setSessionTitle(file, derived, "auto")) return null;
+    }
+    this.adoptSessionName(derived);
+    return derived;
   }
 
   /** Re-read identity after omp reported that it moved this session to a new file. */
